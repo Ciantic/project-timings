@@ -1,4 +1,4 @@
-use futures_util::stream::StreamExt;
+use futures::stream::StreamExt;
 use zbus::{Connection, Result};
 
 use timings_kde::*;
@@ -25,7 +25,10 @@ async fn main() -> Result<()> {
     println!("Current virtual desktop: {}", current);
     let reply = proxy.desktops().await?;
     println!("Current virtual desktops: {:?}", reply);
-    proxy.set_current(&reply[0].1).await?;
+
+    // println!("Setting current virtual desktop to the first one.");
+    // proxy.set_current(&reply[0].1).await?;
+
     let mut property_stream = proxy.receive_current_changed_method().await?;
 
     while let Some(msg) = property_stream.next().await {
