@@ -1,7 +1,7 @@
 use futures::stream::StreamExt;
 use zbus::{Connection, Result};
 
-use timings_kde::*;
+use virtual_desktops::virtual_desktop_manager::VirtualDesktopManagerProxy;
 
 // Although we use `tokio` here, you can use any async runtime of choice.
 #[tokio::main]
@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
     // connection.request_name("org.zbus.Listener").await?;
 
     // `proxy` macro creates `VirtualDesktopManagerProxy` based on `VirtualDesktopManager` trait.
-    let proxy = virtual_desktop_manager::VirtualDesktopManagerProxy::new(&connection).await?;
+    let proxy = VirtualDesktopManagerProxy::new(&connection).await?;
     println!("Proxy to VirtualDesktopManager created.");
     let count = proxy.count().await?;
     println!("Current virtual desktop count: {}", count);
@@ -25,6 +25,8 @@ async fn main() -> Result<()> {
     println!("Current virtual desktop: {}", current);
     let reply = proxy.desktops().await?;
     println!("Current virtual desktops: {:?}", reply);
+
+    proxy.set_desktop_name(&reply[0].1, "HAAHII TEST").await?;
 
     // println!("Setting current virtual desktop to the first one.");
     // proxy.set_current(&reply[0].1).await?;
