@@ -4,6 +4,7 @@ use zbus::Connection;
 
 use crate::api::*;
 
+#[derive(Debug, Clone)]
 pub struct KDEVirtualDesktopController {
     connection: Connection,
 }

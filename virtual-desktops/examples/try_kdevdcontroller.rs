@@ -29,6 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nListening for desktop changes...");
     println!("Switch to a different virtual desktop to see the change event.");
 
+    let query_controller = controller.clone();
     let mut stream = controller.listen().await?;
 
     while let Some(msg) = stream.next().await {
@@ -37,8 +38,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Desktop name changed! New name: {} {}", id, name);
             }
             VirtualDesktopMessage::DesktopChange(id) => {
-                // let name = controller.get_desktop_name(&id).await?;
-                println!("Desktop changed! New desktop ID: {}", id);
+                let name = query_controller.get_desktop_name(&id).await?;
+                println!("Desktop changed! New desktop ID: {} with name {}", id, name);
             }
             VirtualDesktopMessage::Idle => {
                 println!("System went idle");
