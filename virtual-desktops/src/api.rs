@@ -5,7 +5,7 @@ use futures::Stream;
 #[derive(Debug)]
 pub enum Error {
     SysError(String),
-    DesktopNotFound(String),
+    DesktopNotFound(DesktopId),
 }
 
 impl fmt::Display for Error {

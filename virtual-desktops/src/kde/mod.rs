@@ -16,21 +16,21 @@ impl KDEVirtualDesktopController {
     }
 }
 
-async fn get_desktop_name_from_id(
-    proxy: &virtual_desktop_manager::VirtualDesktopManagerProxy<'_>,
-    current_id: &str,
-) -> Result<String, Error> {
-    let desktops = proxy.desktops().await?;
+// async fn get_desktop_name_from_id(
+//     proxy: &virtual_desktop_manager::VirtualDesktopManagerProxy<'_>,
+//     id: &DesktopId,
+// ) -> Result<String, Error> {
+//     let desktops = proxy.desktops().await?;
 
-    // Find the name of the current desktop
-    for desktop in &desktops {
-        if desktop.1 == current_id {
-            return Ok(desktop.2.clone());
-        }
-    }
+//     // Find the name of the current desktop
+//     for desktop in &desktops {
+//         if desktop.1 == id.0 {
+//             return Ok(desktop.2.clone());
+//         }
+//     }
 
-    Err(Error::DesktopNotFound(current_id.to_string()))
-}
+//     Err(Error::DesktopNotFound(id.clone()))
+// }
 
 impl VirtualDesktopController for KDEVirtualDesktopController {
     async fn listen(&mut self) -> Result<impl Stream<Item = VirtualDesktopMessage>, Error> {
@@ -94,8 +94,7 @@ impl VirtualDesktopController for KDEVirtualDesktopController {
         let proxy =
             virtual_desktop_manager::VirtualDesktopManagerProxy::new(&self.connection).await?;
 
-        let current_id = proxy.current().await?;
-
+        let current_id = DesktopId(proxy.current().await?);
         let desktops = proxy.desktops().await?;
 
         // Find the name of the current desktop
