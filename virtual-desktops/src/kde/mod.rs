@@ -1,5 +1,8 @@
+pub mod screen_saver;
 pub mod virtual_desktop_manager;
-use futures::{Stream, StreamExt};
+use std::pin::Pin;
+
+use futures::{FutureExt, Stream, StreamExt};
 use zbus::Connection;
 
 use crate::api::*;
@@ -34,14 +37,16 @@ impl KDEVirtualDesktopController {
 
 impl VirtualDesktopController for KDEVirtualDesktopController {
     async fn listen(&mut self) -> Result<impl Stream<Item = VirtualDesktopMessage>, Error> {
-        let proxy =
+        let vdproxy =
             virtual_desktop_manager::VirtualDesktopManagerProxy::new(&self.connection).await?;
+        let screen_saver_proxy = screen_saver::ScreenSaverProxy::new(&self.connection).await?;
 
-        let current_changed_stream = proxy.receive_current_changed_method().await?;
-        let desktop_data_changed_stream = proxy.receive_desktop_data_changed().await?;
+        let current_changed_stream = vdproxy.receive_current_changed_method().await?;
+        let desktop_data_changed_stream = vdproxy.receive_desktop_data_changed().await?;
+        let active_changed_stream = screen_saver_proxy.receive_active_changed().await?;
 
         let desktop_change_stream = futures::stream::unfold(
-            (current_changed_stream, proxy.clone()),
+            (current_changed_stream, vdproxy.clone()),
             |(mut stream, proxy)| async move {
                 while let Some(msg) = stream.next().await {
                     if let Ok(args) = msg.args() {
@@ -56,7 +61,7 @@ impl VirtualDesktopController for KDEVirtualDesktopController {
         );
 
         let desktop_name_changed_stream = futures::stream::unfold(
-            (desktop_data_changed_stream, proxy),
+            (desktop_data_changed_stream, vdproxy),
             |(mut stream, proxy)| async move {
                 while let Some(msg) = stream.next().await {
                     if let Ok(args) = msg.args() {
@@ -73,8 +78,28 @@ impl VirtualDesktopController for KDEVirtualDesktopController {
             },
         );
 
-        use futures::stream::select;
-        let combined_stream = select(desktop_change_stream, desktop_name_changed_stream);
+        let idle_active_stream =
+            futures::stream::unfold((active_changed_stream), |mut stream| async move {
+                while let Some(msg) = stream.next().await {
+                    if let Ok(args) = msg.args() {
+                        let message = if args.arg_1 {
+                            VirtualDesktopMessage::ScreenSaverActive
+                        } else {
+                            VirtualDesktopMessage::ScreenSaveInactive
+                        };
+                        return Some((message, stream));
+                    }
+                }
+                None
+            });
+
+        use futures::stream::select_all;
+        let streams: Vec<Pin<Box<dyn Stream<Item = VirtualDesktopMessage> + Send>>> = vec![
+            Box::pin(desktop_change_stream),
+            Box::pin(desktop_name_changed_stream),
+            Box::pin(idle_active_stream),
+        ];
+        let combined_stream = select_all(streams);
 
         Ok(Box::pin(combined_stream))
     }
