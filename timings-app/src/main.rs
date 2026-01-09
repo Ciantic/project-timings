@@ -63,6 +63,7 @@ impl ksni::Tray for TrayState {
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        println!("Open menu?");
         use ksni::menu::*;
         vec![
             StandardItem {
@@ -153,16 +154,18 @@ impl VirtualDesktopTimingsRecorder {
     }
 
     pub fn resume_timing(&mut self) {
-        log::info!(
-            "Starting timing: client='{}', project='{}'",
-            &self.client.as_ref().unwrap_or(&"".to_string()),
-            &self.project.as_ref().unwrap_or(&"".to_string())
-        );
-        self.timings_recorder.start_timing(
-            self.client.clone().unwrap_or_default(),
-            self.project.clone().unwrap_or_default(),
-            chrono::Utc::now(),
-        );
+        if let Some(client) = &self.client
+            && let Some(project) = &self.project
+        {
+            log::info!(
+                "Resuming timing: client='{}', project='{}'",
+                client,
+                project
+            );
+
+            self.timings_recorder
+                .start_timing(client.clone(), project.clone(), chrono::Utc::now());
+        }
     }
 
     /// Keeps the current timing alive.
