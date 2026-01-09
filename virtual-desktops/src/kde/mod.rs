@@ -140,4 +140,18 @@ impl VirtualDesktopController for KDEVirtualDesktopController {
 
         Ok(DesktopId(current_id))
     }
+
+    async fn get_desktops(&self) -> Result<Vec<(DesktopId, String)>, Error> {
+        let proxy =
+            virtual_desktop_manager::VirtualDesktopManagerProxy::new(&self.connection).await?;
+
+        let desktops = proxy.desktops().await?;
+
+        let mut result = Vec::with_capacity(desktops.len());
+        for desktop in desktops {
+            result.push((DesktopId(desktop.1.to_string()), desktop.2.clone()));
+        }
+
+        Ok(result)
+    }
 }

@@ -25,7 +25,7 @@ impl From<zbus::Error> for Error {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DesktopId(pub(crate) String);
 
 impl std::fmt::Display for DesktopId {
@@ -53,4 +53,7 @@ pub trait VirtualDesktopController {
 
     /// Gets the current virtual desktop ID.
     async fn get_current_desktop(&self) -> Result<DesktopId, Error>;
+
+    /// Get list of all virtual desktop IDs.
+    async fn get_desktops(&self) -> Result<Vec<(DesktopId, String)>, Error>;
 }

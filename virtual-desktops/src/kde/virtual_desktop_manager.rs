@@ -74,9 +74,11 @@ pub trait VirtualDesktopManager {
     #[zbus(property, name = "count")]
     fn count(&self) -> zbus::Result<u32>;
 
-    /// current property
+    /// current property (returns the ID of the current virtual desktop)
     #[zbus(property, name = "current")]
     fn current(&self) -> zbus::Result<String>;
+
+    /// Set current desktop (ID)
     #[zbus(property, name = "current")]
     fn set_current(&self, value: &str) -> zbus::Result<()>;
 
