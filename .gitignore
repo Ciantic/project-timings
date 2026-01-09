@@ -4,3 +4,4 @@
 data
 Cargo.lock
 timings-qt
+*.db

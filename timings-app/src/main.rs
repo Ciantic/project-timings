@@ -3,7 +3,10 @@ use chrono::Utc;
 use clap::Parser;
 use futures::StreamExt;
 use ksni::TrayMethods;
+use sqlx::ConnectOptions;
 use sqlx::SqlitePool;
+use sqlx::sqlite::SqliteConnectOptions;
+use std::str::FromStr;
 use std::thread;
 use timings::TimingsMutations;
 use timings::TimingsRecording;
@@ -86,7 +89,9 @@ impl VirtualDesktopTimingsRecorder {
         database: &str,
         minimum_timing: Duration,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let pool = SqlitePool::connect(database).await?;
+        let options = SqliteConnectOptions::from_str(database)?.create_if_missing(true);
+
+        let pool = SqlitePool::connect_with(options).await?;
         let mut conn = pool.acquire().await?;
         conn.create_timings_database().await?;
         drop(conn);
@@ -139,6 +144,19 @@ impl VirtualDesktopTimingsRecorder {
         self.timings_recorder.stop_timing(chrono::Utc::now());
     }
 
+    pub fn resume_timing(&mut self) {
+        log::info!(
+            "Starting timing: client='{}', project='{}'",
+            &self.client.as_ref().unwrap_or(&"".to_string()),
+            &self.project.as_ref().unwrap_or(&"".to_string())
+        );
+        self.timings_recorder.start_timing(
+            self.client.clone().unwrap_or_default(),
+            self.project.clone().unwrap_or_default(),
+            chrono::Utc::now(),
+        );
+    }
+
     /// Keeps the current timing alive.
     /// Must be called at least once a minute to prevent gaps in timing.
     pub fn keep_alive(&mut self) {
@@ -171,8 +189,10 @@ impl VirtualDesktopTimingsRecorder {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("timings_app=info"))
-        .init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("timings_app=info,timings=trace"),
+    )
+    .init();
     let cli = Cli::parse();
 
     let mut vd_timings_recorder =
@@ -211,14 +231,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(msg2) = vd_stream.next() => {
                 match msg2 {
                     VirtualDesktopMessage::DesktopNameChanged(id, name) => {
-                        log::debug!("Desktop name changed: {} -> {}", id, name);
+                        // log::debug!("Desktop name changed: {} -> {}", id, name);
                         vd_timings_recorder.start_timing_from_desktop_name(&name);
                         tray_state.update(|s| {
                             s.current_desktop_name = name;
                         }).await;
                     }
                     VirtualDesktopMessage::DesktopChange(id) => {
-                        log::debug!("Desktop changed: {}", id);
+                        // log::debug!("Desktop changed: {}", id);
                         let name = desktop_controller
                             .get_desktop_name(&id)
                             .await
@@ -229,10 +249,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }).await;
                     }
                     VirtualDesktopMessage::ScreenSaveInactive => {
-                        log::debug!("Screen saver inactive");
+                        log::trace!("Screen saver in-active");
+                        vd_timings_recorder.resume_timing();
                     }
                     VirtualDesktopMessage::ScreenSaverActive => {
-                        log::debug!("Screen saver active");
+                        log::trace!("Screen saver active");
+                        vd_timings_recorder.stop_timing();
                     }
                 }
             }

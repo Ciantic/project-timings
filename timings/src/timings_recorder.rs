@@ -52,6 +52,7 @@ impl TimingsRecorder {
         }
 
         if duration.num_seconds() > 0 {
+            log::trace!("Adding timing: {:?}", timing);
             self.unwritten_timings.push(timing);
         } else {
             log::warn!(
@@ -66,6 +67,13 @@ impl TimingsRecorder {
 
 impl TimingsRecording for TimingsRecorder {
     fn start_timing(&mut self, client: String, project: String, now: DateTime<Utc>) -> () {
+        log::trace!(
+            "Starting timing for client={}, project={} at {:?}",
+            client,
+            project,
+            now
+        );
+
         self.keep_alive_timing(now);
 
         // If client and project matches current timing, do nothing
@@ -73,12 +81,12 @@ impl TimingsRecording for TimingsRecorder {
             // There is already a timing going on, should we raise error? Old implementation
             // threw an error
 
-            log::warn!(
-                "There is already a timing going on: {:?}, requested: client={}, project={}",
-                current,
-                client,
-                project
-            );
+            // log::warn!(
+            //     "There is already a timing going on: {:?}, requested: client={},
+            // project={}",     current,
+            //     client,
+            //     project
+            // );
 
             // If same client and project, do nothing, other wise stop current timing
             if current.client == client && current.project == project {
@@ -97,6 +105,8 @@ impl TimingsRecording for TimingsRecorder {
     }
 
     fn stop_timing(&mut self, now: DateTime<Utc>) -> () {
+        log::trace!("Stopping timing at {:?}", now);
+
         self.keep_alive_timing(now);
 
         // If there is a current timing, finalize it
@@ -136,10 +146,16 @@ impl TimingsRecording for TimingsRecorder {
             self.add_timing(timing);
         }
 
+        log::trace!("Keep alive at {:?}", now);
+
         self.last_keep_alive = Some(now);
     }
 
     async fn write_timings(&mut self, conn: &mut impl TimingsMutations) -> Result<(), Error> {
+        log::trace!(
+            "Writing {} timings to database",
+            self.unwritten_timings.len()
+        );
         conn.insert_timings(&self.unwritten_timings).await?;
         self.unwritten_timings.clear();
         Ok(())
