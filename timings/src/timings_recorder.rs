@@ -3,6 +3,7 @@ use crate::Timing;
 use crate::TimingsMutations;
 use crate::api::TimingsRecording;
 use chrono::DateTime;
+use chrono::Duration;
 use chrono::Utc;
 
 // This implementation exists in older TypeScript codebase:
@@ -19,19 +20,37 @@ pub struct TimingsRecorder {
     unwritten_timings: Vec<Timing>,
     current_timing: Option<CurrentTiming>,
     last_keep_alive: Option<DateTime<Utc>>,
+    minimum_timing: Duration,
 }
 
 impl TimingsRecorder {
-    pub fn new() -> Self {
+    pub fn new(minimum_timing: Duration) -> Self {
         TimingsRecorder {
             unwritten_timings: Vec::new(),
             current_timing: None,
             last_keep_alive: None,
+            minimum_timing: if minimum_timing < Duration::zero() {
+                Duration::zero()
+            } else {
+                minimum_timing
+            },
         }
     }
 
     fn add_timing(&mut self, timing: Timing) {
         let duration = timing.end - timing.start;
+
+        if duration < self.minimum_timing {
+            log::info!(
+                "Timing too short ({}s < {}s), ignoring timing: {:?} - {:?}",
+                duration.num_seconds(),
+                self.minimum_timing.num_seconds(),
+                timing.start,
+                timing.end
+            );
+            return;
+        }
+
         if duration.num_seconds() > 0 {
             self.unwritten_timings.push(timing);
         } else {

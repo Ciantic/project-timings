@@ -29,7 +29,7 @@ async fn test_start_timing_multiple_and_persist() -> Result<(), Box<dyn std::err
     let pool = setup_test_db().await?;
     let mut conn = pool.acquire().await?;
 
-    let mut recorder = TimingsRecorder::new();
+    let mut recorder = TimingsRecorder::new(Duration::zero());
     let start_time = Utc.with_ymd_and_hms(2020, 5, 5, 12, 0, 0).unwrap();
 
     // Create multiple timings with distinct client/project combinations
@@ -110,7 +110,7 @@ async fn test_keep_alive_timeout_splits_timing() -> Result<(), Box<dyn std::erro
     let pool = setup_test_db().await?;
     let mut conn = pool.acquire().await?;
 
-    let mut recorder = TimingsRecorder::new();
+    let mut recorder = TimingsRecorder::new(Duration::zero());
     let start_time = Utc.with_ymd_and_hms(2020, 5, 5, 12, 0, 0).unwrap();
 
     recorder.start_timing("client1".to_string(), "project1".to_string(), start_time);
@@ -149,6 +149,39 @@ async fn test_keep_alive_timeout_splits_timing() -> Result<(), Box<dyn std::erro
     assert_eq!(sorted_timings[1].project, "project1");
     assert_eq!(sorted_timings[1].start, start_time + Duration::seconds(91));
     assert_eq!(sorted_timings[1].end, start_time + Duration::seconds(120));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_minimum_timing_3_seconds() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = setup_test_db().await?;
+    let mut conn = pool.acquire().await?;
+
+    let mut recorder = TimingsRecorder::new(Duration::seconds(3));
+    let start_time = Utc.with_ymd_and_hms(2020, 5, 5, 12, 0, 0).unwrap();
+
+    // Short timing (2s) should be ignored
+    recorder.start_timing(
+        "cli_short".to_string(),
+        "proj_short".to_string(),
+        start_time,
+    );
+    recorder.stop_timing(start_time + Duration::seconds(2));
+    recorder.write_timings(&mut *conn).await?;
+    let timings = conn.get_timings(None).await?;
+    assert_eq!(timings.len(), 0, "Short timing should be ignored");
+
+    // Longer timing (4s) should be recorded
+    recorder.start_timing(
+        "cli_long".to_string(),
+        "proj_long".to_string(),
+        start_time + Duration::seconds(10),
+    );
+    recorder.stop_timing(start_time + Duration::seconds(14));
+    recorder.write_timings(&mut *conn).await?;
+    let timings = conn.get_timings(None).await?;
+    assert_eq!(timings.len(), 1, "Long timing should be recorded");
 
     Ok(())
 }
