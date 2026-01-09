@@ -20,6 +20,11 @@ struct Cli {
     /// for in-memory)
     #[arg(short, long, default_value = "sqlite::memory:")]
     database: String,
+
+    /// Minimum timing duration in seconds (timings shorter than this are
+    /// ignored)
+    #[arg(short, long, default_value_t = 3)]
+    minimum_timing: i64,
 }
 
 struct TrayState {
@@ -78,13 +83,15 @@ struct VirtualDesktopTimingsRecorder {
 
 impl VirtualDesktopTimingsRecorder {
     pub async fn new(
-        timings_recorder: timings::TimingsRecorder,
         database: &str,
+        minimum_timing: Duration,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let pool = SqlitePool::connect(database).await?;
         let mut conn = pool.acquire().await?;
         conn.create_timings_database().await?;
         drop(conn);
+
+        let timings_recorder = timings::TimingsRecorder::new(minimum_timing);
 
         Ok(Self {
             client: None,
@@ -168,9 +175,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
     let cli = Cli::parse();
 
-    let timings_recorder = timings::TimingsRecorder::new(Duration::seconds(10));
     let mut vd_timings_recorder =
-        VirtualDesktopTimingsRecorder::new(timings_recorder, &cli.database).await?;
+        VirtualDesktopTimingsRecorder::new(&cli.database, Duration::seconds(cli.minimum_timing))
+            .await?;
 
     let desktop_controller = KDEVirtualDesktopController::new().await?;
     let current_desktop = desktop_controller.get_current_desktop().await?;
