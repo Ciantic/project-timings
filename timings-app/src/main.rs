@@ -1,9 +1,7 @@
 use chrono::Duration;
-use chrono::Utc;
 use clap::Parser;
 use futures::StreamExt;
 use ksni::TrayMethods;
-use sqlx::ConnectOptions;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 use std::str::FromStr;
@@ -39,6 +37,7 @@ enum AppMessage {
     Exit,
     WriteTimings,
     KeepAlive,
+    ShowDailyTotals,
 }
 
 impl ksni::Tray for TrayState {
@@ -173,6 +172,42 @@ impl VirtualDesktopTimingsRecorder {
         Ok(())
     }
 
+    /// Shows daily totals from the past two weeks.
+    pub async fn show_daily_totals(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        use timings::TimingsQueries;
+
+        let mut conn = self.pool.acquire().await?;
+        let end_date = chrono::Utc::now();
+        let start_date = end_date - chrono::Duration::days(14);
+
+        let totals = conn
+            .get_timings_daily_totals(start_date, end_date, None, None)
+            .await?;
+
+        if totals.is_empty() {
+            println!("No timings found for the past two weeks.");
+            return Ok(());
+        }
+
+        // Print table header
+        println!(
+            "\n{:<12} {:<20} {:<20} {:>10}",
+            "Date", "Client", "Project", "Hours"
+        );
+        println!("{}", "-".repeat(64));
+
+        // Print each row
+        for total in totals {
+            println!(
+                "{:<12} {:<20} {:<20} {:>10.2}",
+                total.day, total.client, total.project, total.hours
+            );
+        }
+        println!();
+
+        Ok(())
+    }
+
     /// Parses a desktop name into client and project.
     /// Format: "client: project" or just "client"
     fn parse_desktop_name(desktop_name: &str) -> (Option<String>, Option<String>) {
@@ -231,7 +266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::select! {
             Some(msg2) = vd_stream.next() => {
                 match msg2 {
-                    VirtualDesktopMessage::DesktopNameChanged(id, name) => {
+                    VirtualDesktopMessage::DesktopNameChanged(_id, name) => {
                         // log::debug!("Desktop name changed: {} -> {}", id, name);
                         vd_timings_recorder.start_timing_from_desktop_name(&name);
                         tray_state.update(|s| {
@@ -273,6 +308,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         log::trace!("Keep alive timing");
                         vd_timings_recorder.keep_alive();
                     }
+                    AppMessage::ShowDailyTotals => {
+                        if let Err(e) = vd_timings_recorder.show_daily_totals().await {
+                            log::error!("Failed to show daily totals: {}", e);
+                        }
+                    }
                 }
             }
         }
@@ -283,25 +323,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn spawn_stdin_reader(app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>) {
     fn print_info() {
         println!("Commands:");
-        println!("0: Exit");
+        println!("Q: Exit");
         println!("1: Write timings to database");
-        println!("Type command: ");
+        println!("2: Show daily totals from past two weeks");
+        println!("Type command and press Enter: ");
     }
     // let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     thread::spawn(move || {
         print_info();
         for line in std::io::stdin().lines() {
-            match line.unwrap().as_str() {
-                "0" => {
+            match line.unwrap().to_lowercase().as_str() {
+                "q" => {
                     let _ = app_message_sender.send(AppMessage::Exit);
                     break;
                 }
                 "1" => {
                     let _ = app_message_sender.send(AppMessage::WriteTimings);
                 }
-                _ => {}
+                "2" => {
+                    let _ = app_message_sender.send(AppMessage::ShowDailyTotals);
+                }
+                _ => {
+                    print_info();
+                }
             }
-            print_info();
         }
     });
 }
