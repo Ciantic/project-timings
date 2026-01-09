@@ -48,6 +48,7 @@ enum AppMessage {
     KeepAlive,
     ShowDailyTotals,
     VirtualDesktop(VirtualDesktopMessage),
+    VirtualDesktopThreadExited,
 }
 
 impl ksni::Tray for TrayState {
@@ -355,6 +356,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     vd_timings_recorder.stop_timing();
                 }
             },
+            Some(AppMessage::VirtualDesktopThreadExited) => {
+                log::warn!(
+                    "Virtual desktop listener thread has exited, this happens if the D-Bus \
+                     connection is lost for instance when user closes the desktop but not the \
+                     application."
+                );
+                break Err("Virtual desktop listener thread has exited".into());
+            }
             None => {
                 break Ok(());
             }
@@ -381,6 +390,8 @@ fn spawn_virtual_desktop_listener(
                 }
             }
         }
+
+        let _ = app_message_sender.send(AppMessage::VirtualDesktopThreadExited);
     });
 }
 
