@@ -1,12 +1,26 @@
+use chrono::Duration;
+use chrono::Utc;
+use clap::Parser;
 use futures::StreamExt;
 use ksni::TrayMethods;
 use sqlx::SqlitePool;
 use std::thread;
 use timings::TimingsMutations;
+use timings::TimingsRecording;
 use tokio::sync::mpsc::UnboundedSender;
 use virtual_desktops::KDEVirtualDesktopController;
 use virtual_desktops::VirtualDesktopController;
 use virtual_desktops::VirtualDesktopMessage;
+
+#[derive(Parser)]
+#[command(name = "timings-app")]
+#[command(about = "Virtual desktop timings tracker", long_about = None)]
+struct Cli {
+    /// Path to the SQLite database file (e.g., timings.db or sqlite::memory:
+    /// for in-memory)
+    #[arg(short, long, default_value = "sqlite::memory:")]
+    database: String,
+}
 
 struct TrayState {
     current_desktop_name: String,
@@ -15,6 +29,8 @@ struct TrayState {
 
 enum AppMessage {
     Exit,
+    WriteTimings,
+    KeepAlive,
 }
 
 impl ksni::Tray for TrayState {
@@ -53,14 +69,108 @@ impl ksni::Tray for TrayState {
     }
 }
 
+struct VirtualDesktopTimingsRecorder {
+    client: Option<String>,
+    project: Option<String>,
+    timings_recorder: timings::TimingsRecorder,
+    pool: SqlitePool,
+}
+
+impl VirtualDesktopTimingsRecorder {
+    pub async fn new(
+        timings_recorder: timings::TimingsRecorder,
+        database: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let pool = SqlitePool::connect(database).await?;
+        let mut conn = pool.acquire().await?;
+        conn.create_timings_database().await?;
+        drop(conn);
+
+        Ok(Self {
+            client: None,
+            project: None,
+            timings_recorder,
+            pool,
+        })
+    }
+
+    /// Starts timing from a desktop name.
+    /// The desktop name is expected to be in the format "client: project".
+    /// If no colon is present, the entire name is used as the client.
+    /// Only starts timing if both client and project can be parsed.
+    pub fn start_timing_from_desktop_name(&mut self, desktop_name: &str) -> bool {
+        let (client, project) = Self::parse_desktop_name(desktop_name);
+        let old_client = self.client.clone();
+        let old_project = self.project.clone();
+        self.client = client.clone();
+        self.project = project.clone();
+
+        if let (Some(client), Some(project)) = (client, project) {
+            log::info!(
+                "Starting timing: client='{}', project='{}' (previous: client={:?}, project={:?})",
+                client,
+                project,
+                old_client,
+                old_project
+            );
+            self.timings_recorder
+                .start_timing(client, project, chrono::Utc::now());
+            true
+        } else {
+            log::warn!(
+                "Stopping timing: desktop name '{}' has no valid project",
+                desktop_name
+            );
+            self.timings_recorder.stop_timing(chrono::Utc::now());
+            false
+        }
+    }
+
+    /// Stops the current timing.
+    pub fn stop_timing(&mut self) {
+        log::info!("Stopping timing");
+        self.timings_recorder.stop_timing(chrono::Utc::now());
+    }
+
+    /// Keeps the current timing alive.
+    /// Must be called at least once a minute to prevent gaps in timing.
+    pub fn keep_alive(&mut self) {
+        self.timings_recorder.keep_alive_timing(chrono::Utc::now());
+    }
+
+    /// Writes accumulated timings to the database.
+    pub async fn write_timings(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        log::info!("Writing timings to database");
+        let mut conn = self.pool.acquire().await?;
+        self.timings_recorder.write_timings(&mut *conn).await?;
+        log::info!("Successfully wrote timings to database");
+        Ok(())
+    }
+
+    /// Parses a desktop name into client and project.
+    /// Format: "client: project" or just "client"
+    fn parse_desktop_name(desktop_name: &str) -> (Option<String>, Option<String>) {
+        let parts: Vec<&str> = desktop_name.splitn(2, ':').collect();
+        if parts.len() == 2 {
+            (
+                Some(parts[0].trim().to_string()),
+                Some(parts[1].trim().to_string()),
+            )
+        } else {
+            (Some(desktop_name.trim().to_string()), None)
+        }
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = SqlitePool::connect("sqlite::memory:").await?;
-    let mut conn = pool.acquire().await?;
-    conn.create_timings_database().await?;
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("timings_app=info"))
+        .init();
+    let cli = Cli::parse();
 
-    let mut client: Option<String> = None;
-    let mut project: Option<String> = None;
+    let timings_recorder = timings::TimingsRecorder::new(Duration::seconds(10));
+    let mut vd_timings_recorder =
+        VirtualDesktopTimingsRecorder::new(timings_recorder, &cli.database).await?;
 
     let desktop_controller = KDEVirtualDesktopController::new().await?;
     let current_desktop = desktop_controller.get_current_desktop().await?;
@@ -68,6 +178,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_desktop_name(&current_desktop)
         .await
         .unwrap_or_else(|_| "Unknown".to_string());
+
+    // Initialize timing for the current desktop
+    vd_timings_recorder.start_timing_from_desktop_name(&current_desktop_name);
+
     let (appmsg_sender, mut appmsgs) = tokio::sync::mpsc::unbounded_channel::<AppMessage>();
 
     let tray_state = TrayState {
@@ -81,6 +195,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     spawn_stdin_reader(appmsg_sender.clone());
+    spawn_write_timings_thread(appmsg_sender.clone());
+    spawn_keepalive_thread(appmsg_sender.clone());
     let mut vd_controller_listener = desktop_controller.clone();
     let mut vd_stream = vd_controller_listener.listen().await?;
     loop {
@@ -88,36 +204,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(msg2) = vd_stream.next() => {
                 match msg2 {
                     VirtualDesktopMessage::DesktopNameChanged(id, name) => {
-                        println!("Desktop name changed: {} -> {}", id, name);
-                        let (new_client, new_project) = parse_desktop_name(&name);
-                        if client != new_client || project != new_project {
-                            client = new_client;
-                            project = new_project;
-                        }
+                        log::debug!("Desktop name changed: {} -> {}", id, name);
+                        vd_timings_recorder.start_timing_from_desktop_name(&name);
                         tray_state.update(|s| {
                             s.current_desktop_name = name;
                         }).await;
                     }
                     VirtualDesktopMessage::DesktopChange(id) => {
-                        println!("Desktop changed: {}", id);
+                        log::debug!("Desktop changed: {}", id);
                         let name = desktop_controller
                             .get_desktop_name(&id)
                             .await
                             .unwrap_or_else(|_| "Unknown".to_string());
-                        let (new_client, new_project) = parse_desktop_name(&name);
-                        if client != new_client || project != new_project {
-                            client = new_client;
-                            project = new_project;
-                        }
+                        vd_timings_recorder.start_timing_from_desktop_name(&name);
                         tray_state.update(|s| {
                             s.current_desktop_name = name;
                         }).await;
                     }
                     VirtualDesktopMessage::ScreenSaveInactive => {
-                        println!("Screen saver inactive");
+                        log::debug!("Screen saver inactive");
                     }
                     VirtualDesktopMessage::ScreenSaverActive => {
-                        println!("Screen saver active");
+                        log::debug!("Screen saver active");
                     }
                 }
             }
@@ -125,6 +233,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match msg {
                     AppMessage::Exit => {
                         break Ok(());
+                    }
+                    AppMessage::WriteTimings => {
+                        if let Err(e) = vd_timings_recorder.write_timings().await {
+                            log::error!("Failed to write timings: {}", e);
+                        }
+                    }
+                    AppMessage::KeepAlive => {
+                        log::trace!("Keep alive timing");
+                        vd_timings_recorder.keep_alive();
                     }
                 }
             }
@@ -137,30 +254,50 @@ fn spawn_stdin_reader(app_message_sender: tokio::sync::mpsc::UnboundedSender<App
     fn print_info() {
         println!("Commands:");
         println!("0: Exit");
+        println!("1: Write timings to database");
         println!("Type command: ");
     }
     // let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     thread::spawn(move || {
         print_info();
         for line in std::io::stdin().lines() {
-            if line.unwrap() == "0" {
-                let _ = app_message_sender.send(AppMessage::Exit);
-                break;
+            match line.unwrap().as_str() {
+                "0" => {
+                    let _ = app_message_sender.send(AppMessage::Exit);
+                    break;
+                }
+                "1" => {
+                    let _ = app_message_sender.send(AppMessage::WriteTimings);
+                }
+                _ => {}
             }
             print_info();
         }
     });
 }
 
-fn parse_desktop_name(desktop_name: &str) -> (Option<String>, Option<String>) {
-    // Split desktop name by ":" into client and project
-    let parts: Vec<&str> = desktop_name.splitn(2, ':').collect();
-    if parts.len() == 2 {
-        (
-            Some(parts[0].trim().to_string()),
-            Some(parts[1].trim().to_string()),
-        )
-    } else {
-        (Some(desktop_name.trim().to_string()), None)
-    }
+/// Spawns a thread that sends WriteTimings message every 3 minutes
+fn spawn_write_timings_thread(app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>) {
+    thread::spawn(move || {
+        loop {
+            thread::sleep(std::time::Duration::from_secs(3 * 60));
+            if app_message_sender.send(AppMessage::WriteTimings).is_err() {
+                // Main thread has exited, stop the loop
+                break;
+            }
+        }
+    });
+}
+
+/// Spawns a thread that sends KeepAlive message every 30 seconds
+fn spawn_keepalive_thread(app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>) {
+    thread::spawn(move || {
+        loop {
+            thread::sleep(std::time::Duration::from_secs(30));
+            if app_message_sender.send(AppMessage::KeepAlive).is_err() {
+                // Main thread has exited, stop the loop
+                break;
+            }
+        }
+    });
 }
