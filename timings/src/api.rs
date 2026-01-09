@@ -101,5 +101,9 @@ pub trait TimingsRecording {
     fn keep_alive_timing(&mut self, now: DateTime<Utc>) -> ();
 
     /// Flushes unwritten timings to the database.
-    async fn write_timings(&mut self, conn: &mut impl TimingsMutations) -> Result<(), Error>;
+    async fn write_timings(
+        &mut self,
+        conn: &mut impl TimingsMutations,
+        now: DateTime<Utc>,
+    ) -> Result<(), Error>;
 }

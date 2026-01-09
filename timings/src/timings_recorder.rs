@@ -151,12 +151,29 @@ impl TimingsRecording for TimingsRecorder {
         self.last_keep_alive = Some(now);
     }
 
-    async fn write_timings(&mut self, conn: &mut impl TimingsMutations) -> Result<(), Error> {
-        log::trace!(
-            "Writing {} timings to database",
-            self.unwritten_timings.len()
-        );
-        conn.insert_timings(&self.unwritten_timings).await?;
+    async fn write_timings(
+        &mut self,
+        conn: &mut impl TimingsMutations,
+        now: DateTime<Utc>,
+    ) -> Result<(), Error> {
+        let mut timings_to_write = self.unwritten_timings.clone();
+
+        // Include current running timing if it exists and meets minimum duration
+        if let Some(current) = &self.current_timing {
+            let duration = now - current.start;
+
+            if duration >= self.minimum_timing {
+                timings_to_write.push(Timing {
+                    client: current.client.clone(),
+                    project: current.project.clone(),
+                    start: current.start,
+                    end: now,
+                });
+            }
+        }
+
+        log::trace!("Writing {} timings to database", timings_to_write.len());
+        conn.insert_timings(&timings_to_write).await?;
         self.unwritten_timings.clear();
         Ok(())
     }

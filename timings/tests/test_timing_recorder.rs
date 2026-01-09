@@ -62,7 +62,8 @@ async fn test_start_timing_multiple_and_persist() -> Result<(), Box<dyn std::err
     }
 
     // Write to database
-    recorder.write_timings(&mut *conn).await?;
+    let write_time = start_time + Duration::seconds(400);
+    recorder.write_timings(&mut *conn, write_time).await?;
 
     // Verify all were written
     let timings = conn.get_timings(None).await?;
@@ -127,7 +128,9 @@ async fn test_keep_alive_timeout_splits_timing() -> Result<(), Box<dyn std::erro
     recorder.stop_timing(start_time + Duration::seconds(120));
 
     // Write to database
-    recorder.write_timings(&mut *conn).await?;
+    recorder
+        .write_timings(&mut *conn, start_time + Duration::seconds(130))
+        .await?;
 
     // Verify the timing was split into two
     let timings = conn.get_timings(None).await?;
@@ -168,7 +171,9 @@ async fn test_minimum_timing_3_seconds() -> Result<(), Box<dyn std::error::Error
         start_time,
     );
     recorder.stop_timing(start_time + Duration::seconds(2));
-    recorder.write_timings(&mut *conn).await?;
+    recorder
+        .write_timings(&mut *conn, start_time + Duration::seconds(3))
+        .await?;
     let timings = conn.get_timings(None).await?;
     assert_eq!(timings.len(), 0, "Short timing should be ignored");
 
@@ -179,9 +184,108 @@ async fn test_minimum_timing_3_seconds() -> Result<(), Box<dyn std::error::Error
         start_time + Duration::seconds(10),
     );
     recorder.stop_timing(start_time + Duration::seconds(14));
-    recorder.write_timings(&mut *conn).await?;
+    recorder
+        .write_timings(&mut *conn, start_time + Duration::seconds(15))
+        .await?;
     let timings = conn.get_timings(None).await?;
     assert_eq!(timings.len(), 1, "Long timing should be recorded");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_write_timings_includes_current_running_timing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pool = setup_test_db().await?;
+    let mut conn = pool.acquire().await?;
+
+    let mut recorder = TimingsRecorder::new(Duration::seconds(3));
+
+    let start_time = Utc.with_ymd_and_hms(2020, 5, 5, 12, 0, 0).unwrap();
+
+    // Start a timing but don't stop it
+    recorder.start_timing(
+        "client_running".to_string(),
+        "project_running".to_string(),
+        start_time,
+    );
+
+    // Write to database 10 seconds later - should include the running timing
+    let first_write_time = start_time + Duration::seconds(10);
+    recorder.write_timings(&mut *conn, first_write_time).await?;
+
+    // Verify the running timing was saved
+    let timings = conn.get_timings(None).await?;
+    assert_eq!(timings.len(), 1, "Running timing should be saved");
+    assert_eq!(timings[0].client, "client_running");
+    assert_eq!(timings[0].project, "project_running");
+    assert_eq!(timings[0].start, start_time);
+    assert_eq!(
+        timings[0].end, first_write_time,
+        "End should match first write time"
+    );
+
+    // Write again 5 seconds later - should update the same timing with new end time
+    // (no duplicates)
+    let second_write_time = start_time + Duration::seconds(15);
+    recorder
+        .write_timings(&mut *conn, second_write_time)
+        .await?;
+
+    let timings_after_second_write = conn.get_timings(None).await?;
+    assert_eq!(
+        timings_after_second_write.len(),
+        1,
+        "Should still have only one timing (no duplicates)"
+    );
+    assert_eq!(
+        timings_after_second_write[0].end, second_write_time,
+        "End should be updated to second write time"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_write_timings_respects_minimum_for_running_timing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pool = setup_test_db().await?;
+    let mut conn = pool.acquire().await?;
+
+    let mut recorder = TimingsRecorder::new(Duration::seconds(10));
+
+    let start_time = Utc.with_ymd_and_hms(2020, 5, 5, 12, 0, 0).unwrap();
+
+    // Start a timing but don't stop it
+    recorder.start_timing(
+        "client_short".to_string(),
+        "project_short".to_string(),
+        start_time,
+    );
+
+    // Write only 2 seconds later - current timing is too short, should not be saved
+    recorder
+        .write_timings(&mut *conn, start_time + Duration::seconds(2))
+        .await?;
+
+    let timings = conn.get_timings(None).await?;
+    assert_eq!(timings.len(), 0, "Short running timing should not be saved");
+
+    // Now start a different timing
+    recorder.start_timing(
+        "client_long".to_string(),
+        "project_long".to_string(),
+        start_time + Duration::seconds(100),
+    );
+
+    // Write 15 seconds after the long timing started - exceeds minimum
+    recorder
+        .write_timings(&mut *conn, start_time + Duration::seconds(115))
+        .await?;
+
+    let timings = conn.get_timings(None).await?;
+    assert_eq!(timings.len(), 1, "Long running timing should now be saved");
+    assert_eq!(timings[0].client, "client_long");
 
     Ok(())
 }

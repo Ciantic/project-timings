@@ -167,7 +167,8 @@ impl VirtualDesktopTimingsRecorder {
     pub async fn write_timings(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         log::info!("Writing timings to database");
         let mut conn = self.pool.acquire().await?;
-        self.timings_recorder.write_timings(&mut *conn).await?;
+        let now = chrono::Utc::now();
+        self.timings_recorder.write_timings(&mut *conn, now).await?;
         log::info!("Successfully wrote timings to database");
         Ok(())
     }
