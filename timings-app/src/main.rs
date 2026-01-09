@@ -47,6 +47,7 @@ enum AppMessage {
     WriteTimings,
     KeepAlive,
     ShowDailyTotals,
+    VirtualDesktop(VirtualDesktopMessage),
 }
 
 impl ksni::Tray for TrayState {
@@ -303,63 +304,84 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_stdin_reader(appmsg_sender.clone());
     spawn_write_timings_thread(appmsg_sender.clone());
     spawn_keepalive_thread(appmsg_sender.clone());
-    let mut vd_controller_listener = desktop_controller.clone();
-    let mut vd_stream = vd_controller_listener.listen().await?;
+    spawn_virtual_desktop_listener(desktop_controller.clone(), appmsg_sender.clone());
+
     loop {
-        tokio::select! {
-            Some(msg2) = vd_stream.next() => {
-                match msg2 {
-                    VirtualDesktopMessage::DesktopNameChanged(_id, name) => {
-                        // log::debug!("Desktop name changed: {} -> {}", id, name);
-                        vd_timings_recorder.start_timing_from_desktop_name(&name);
-                        tray_state.update(|s| {
-                            s.current_desktop_name = name;
-                        }).await;
-                    }
-                    VirtualDesktopMessage::DesktopChange(id) => {
-                        // log::debug!("Desktop changed: {}", id);
-                        let name = desktop_controller
-                            .get_desktop_name(&id)
-                            .await
-                            .unwrap_or_else(|_| "Unknown".to_string());
-                        vd_timings_recorder.start_timing_from_desktop_name(&name);
-                        tray_state.update(|s| {
-                            s.current_desktop_name = name;
-                        }).await;
-                    }
-                    VirtualDesktopMessage::ScreenSaveInactive => {
-                        log::trace!("Screen saver in-active");
-                        vd_timings_recorder.resume_timing();
-                    }
-                    VirtualDesktopMessage::ScreenSaverActive => {
-                        log::trace!("Screen saver active");
-                        vd_timings_recorder.stop_timing();
-                    }
+        match appmsgs.recv().await {
+            Some(AppMessage::Exit) => {
+                break Ok(());
+            }
+            Some(AppMessage::WriteTimings) => {
+                if let Err(e) = vd_timings_recorder.write_timings().await {
+                    log::error!("Failed to write timings: {}", e);
                 }
             }
-            Some(msg) = appmsgs.recv() => {
-                match msg {
-                    AppMessage::Exit => {
-                        break Ok(());
-                    }
-                    AppMessage::WriteTimings => {
-                        if let Err(e) = vd_timings_recorder.write_timings().await {
-                            log::error!("Failed to write timings: {}", e);
-                        }
-                    }
-                    AppMessage::KeepAlive => {
-                        log::trace!("Keep alive timing");
-                        vd_timings_recorder.keep_alive();
-                    }
-                    AppMessage::ShowDailyTotals => {
-                        if let Err(e) = vd_timings_recorder.show_daily_totals().await {
-                            log::error!("Failed to show daily totals: {}", e);
-                        }
-                    }
+            Some(AppMessage::KeepAlive) => {
+                log::trace!("Keep alive timing");
+                vd_timings_recorder.keep_alive();
+            }
+            Some(AppMessage::ShowDailyTotals) => {
+                if let Err(e) = vd_timings_recorder.show_daily_totals().await {
+                    log::error!("Failed to show daily totals: {}", e);
                 }
+            }
+            Some(AppMessage::VirtualDesktop(vd_msg)) => match vd_msg {
+                VirtualDesktopMessage::DesktopNameChanged(_id, name) => {
+                    vd_timings_recorder.start_timing_from_desktop_name(&name);
+                    tray_state
+                        .update(|s| {
+                            s.current_desktop_name = name;
+                        })
+                        .await;
+                }
+                VirtualDesktopMessage::DesktopChange(id) => {
+                    let name = desktop_controller
+                        .get_desktop_name(&id)
+                        .await
+                        .unwrap_or_else(|_| "Unknown".to_string());
+                    vd_timings_recorder.start_timing_from_desktop_name(&name);
+                    tray_state
+                        .update(|s| {
+                            s.current_desktop_name = name;
+                        })
+                        .await;
+                }
+                VirtualDesktopMessage::ScreenSaveInactive => {
+                    log::trace!("Screen saver in-active");
+                    vd_timings_recorder.resume_timing();
+                }
+                VirtualDesktopMessage::ScreenSaverActive => {
+                    log::trace!("Screen saver active");
+                    vd_timings_recorder.stop_timing();
+                }
+            },
+            None => {
+                break Ok(());
             }
         }
     }
+}
+
+/// Spawns a task that listens to virtual desktop messages and forwards them to
+/// the app message channel
+fn spawn_virtual_desktop_listener(
+    desktop_controller: KDEVirtualDesktopController,
+    app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>,
+) {
+    tokio::spawn(async move {
+        let mut vd_controller_listener = desktop_controller;
+        if let Ok(mut vd_stream) = vd_controller_listener.listen().await {
+            while let Some(vd_msg) = vd_stream.next().await {
+                if app_message_sender
+                    .send(AppMessage::VirtualDesktop(vd_msg))
+                    .is_err()
+                {
+                    // Main thread has exited, stop the loop
+                    break;
+                }
+            }
+        }
+    });
 }
 
 /// Spawns a thread to read lines from stdin
