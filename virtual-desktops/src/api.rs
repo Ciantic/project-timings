@@ -1,6 +1,5 @@
-use std::fmt;
-
 use futures::Stream;
+use std::fmt;
 
 #[derive(Debug)]
 pub enum Error {

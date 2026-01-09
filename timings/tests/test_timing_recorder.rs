@@ -1,6 +1,12 @@
-use chrono::{DateTime, Duration, TimeZone, Utc};
+use chrono::DateTime;
+use chrono::Duration;
+use chrono::TimeZone;
+use chrono::Utc;
 use sqlx::SqlitePool;
-use timings::{TimingsMutations, TimingsQueries, TimingsRecorder, TimingsRecording};
+use timings::TimingsMutations;
+use timings::TimingsQueries;
+use timings::TimingsRecorder;
+use timings::TimingsRecording;
 
 async fn setup_test_db() -> Result<SqlitePool, Box<dyn std::error::Error>> {
     let pool = SqlitePool::connect("sqlite::memory:").await?;

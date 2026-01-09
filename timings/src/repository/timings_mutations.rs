@@ -3,11 +3,15 @@
 //! Not to be used directly, use the traits in `timings.rs` instead.
 
 use super::utils::datetime_to_ms;
+use crate::SummaryForDay;
+use crate::Timing;
+use crate::TimingsMutations;
 use crate::error::Error;
-use crate::{SummaryForDay, Timing, TimingsMutations};
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
+use chrono::Utc;
 use sqlx::Acquire;
-use sqlx::{Executor, SqliteConnection};
+use sqlx::Executor;
+use sqlx::SqliteConnection;
 
 #[derive(Debug, Clone)]
 struct Summary {

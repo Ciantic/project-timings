@@ -1,11 +1,11 @@
 pub mod screen_saver;
 pub mod virtual_desktop_manager;
-use std::pin::Pin;
-
-use futures::{FutureExt, Stream, StreamExt};
-use zbus::Connection;
-
 use crate::api::*;
+use futures::FutureExt;
+use futures::Stream;
+use futures::StreamExt;
+use std::pin::Pin;
+use zbus::Connection;
 
 #[derive(Debug, Clone)]
 pub struct KDEVirtualDesktopController {

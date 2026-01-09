@@ -1,3 +1,3 @@
-mod timings_queries;
 mod timings_mutations;
+mod timings_queries;
 mod utils;

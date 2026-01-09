@@ -1,19 +1,12 @@
-use std::{
-    collections::HashMap,
-    fmt::Error,
-    io::Write,
-    sync::{Arc, Mutex},
-    thread,
-};
-
 use futures::StreamExt;
-use ksni::{Handle, TrayMethods};
+use ksni::TrayMethods;
 use sqlx::SqlitePool;
+use std::thread;
 use timings::TimingsMutations;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use virtual_desktops::{
-    DesktopId, KDEVirtualDesktopController, VirtualDesktopController, VirtualDesktopMessage,
-};
+use tokio::sync::mpsc::UnboundedSender;
+use virtual_desktops::KDEVirtualDesktopController;
+use virtual_desktops::VirtualDesktopController;
+use virtual_desktops::VirtualDesktopMessage;
 
 struct TrayState {
     current_desktop_name: String,
@@ -28,12 +21,15 @@ impl ksni::Tray for TrayState {
     fn id(&self) -> String {
         env!("CARGO_PKG_NAME").into()
     }
+
     fn icon_name(&self) -> String {
         "help-about".into()
     }
+
     fn title(&self) -> String {
         "Timings".into()
     }
+
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;
         vec![

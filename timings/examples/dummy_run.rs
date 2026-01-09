@@ -2,7 +2,6 @@ use chrono::Days;
 use chrono::Local;
 use chrono::Utc;
 use sqlx::SqlitePool;
-
 use timings::*;
 
 #[tokio::main]

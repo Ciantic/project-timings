@@ -1,9 +1,8 @@
 use futures::stream::StreamExt;
-use zbus::{Connection, Result};
-
-use virtual_desktops::{
-    screen_saver::ScreenSaverProxy, virtual_desktop_manager::VirtualDesktopManagerProxy,
-};
+use virtual_desktops::screen_saver::ScreenSaverProxy;
+use virtual_desktops::virtual_desktop_manager::VirtualDesktopManagerProxy;
+use zbus::Connection;
+use zbus::Result;
 
 // Although we use `tokio` here, you can use any async runtime of choice.
 #[tokio::main]
@@ -18,7 +17,8 @@ async fn main() -> Result<()> {
 
     // connection.request_name("org.zbus.Listener").await?;
 
-    // `proxy` macro creates `VirtualDesktopManagerProxy` based on `VirtualDesktopManager` trait.
+    // `proxy` macro creates `VirtualDesktopManagerProxy` based on
+    // `VirtualDesktopManager` trait.
     let proxy = ScreenSaverProxy::new(&connection).await?;
     let is_active = proxy.get_active().await?;
     println!("Screen saver active: {}", is_active);

@@ -1,5 +1,9 @@
-use crate::{Error, Timing, TimingsMutations, api::TimingsRecording};
-use chrono::{DateTime, Utc};
+use crate::Error;
+use crate::Timing;
+use crate::TimingsMutations;
+use crate::api::TimingsRecording;
+use chrono::DateTime;
+use chrono::Utc;
 
 // This implementation exists in older TypeScript codebase:
 // https://github.com/Ciantic/winvd-monitoring/blob/b9e27d84a8412b0e97285f0dd869f56a57b3df4b/ui/TimingRecorder.ts#L14
@@ -32,7 +36,8 @@ impl TimingsRecorder {
             self.unwritten_timings.push(timing);
         } else {
             log::warn!(
-                "Timing is empty or timing end time {:?} is before start time {:?}, ignoring timing",
+                "Timing is empty or timing end time {:?} is before start time {:?}, ignoring \
+                 timing",
                 timing.end,
                 timing.start
             );
@@ -46,7 +51,8 @@ impl TimingsRecording for TimingsRecorder {
 
         // If client and project matches current timing, do nothing
         if let Some(current) = &self.current_timing {
-            // There is already a timing going on, should we raise error? Old implementation threw an error
+            // There is already a timing going on, should we raise error? Old implementation
+            // threw an error
 
             log::warn!(
                 "There is already a timing going on: {:?}, requested: client={}, project={}",

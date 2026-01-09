@@ -2,12 +2,21 @@
 //!
 //! Not to be used directly, use the traits in `timings.rs` instead.
 
-use super::utils::{datetime_to_ms, ms_to_datetime};
+use super::utils::datetime_to_ms;
+use super::utils::ms_to_datetime;
+use crate::DailyTotalSummary;
+use crate::GetTimingsFilters;
+use crate::SummaryForDay;
+use crate::Timing;
+use crate::TimingsQueries;
 use crate::error::Error;
-use crate::{DailyTotalSummary, GetTimingsFilters, SummaryForDay, Timing, TimingsQueries};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::DateTime;
+use chrono::NaiveDate;
+use chrono::Utc;
 use const_format::str_split;
-use sqlx::{Sqlite, SqliteConnection, query_builder::QueryBuilder};
+use sqlx::Sqlite;
+use sqlx::SqliteConnection;
+use sqlx::query_builder::QueryBuilder;
 
 #[derive(Debug, Clone)]
 struct Summary {

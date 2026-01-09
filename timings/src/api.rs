@@ -1,5 +1,8 @@
 use crate::Error;
-use chrono::{DateTime, NaiveDate, TimeZone, Utc};
+use chrono::DateTime;
+use chrono::NaiveDate;
+use chrono::TimeZone;
+use chrono::Utc;
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct Timing {
@@ -35,7 +38,8 @@ pub struct SummaryForDay {
 
 /// Trait for querying timings database.
 ///
-/// This is implemented for &mut SqliteConnection in repository/timings_queries.rs
+/// This is implemented for &mut SqliteConnection in
+/// repository/timings_queries.rs
 pub trait TimingsQueries {
     async fn get_timings(
         &mut self,
@@ -62,7 +66,8 @@ pub trait TimingsQueries {
 
 /// Trait for mutating timings database.
 ///
-/// This is implemented for &mut SqliteConnection in repository/timings_mutations.rs
+/// This is implemented for &mut SqliteConnection in
+/// repository/timings_mutations.rs
 pub trait TimingsMutations {
     async fn create_timings_database(&mut self) -> Result<(), Error>;
 
@@ -87,11 +92,12 @@ pub trait TimingsRecording {
 
     /// Keeps the current timing alive by updating its end time to now.
     ///
-    /// Must be called at least once a minute, if there is gap lasting longer than a minute,
-    /// the timing will be considered stopped at the time of the last keep-alive call.
+    /// Must be called at least once a minute, if there is gap lasting longer
+    /// than a minute, the timing will be considered stopped at the time of
+    /// the last keep-alive call.
     ///
-    /// This ensures that for instance system sleep or hibernation does not cause
-    /// excessively long timings.
+    /// This ensures that for instance system sleep or hibernation does not
+    /// cause excessively long timings.
     fn keep_alive_timing(&mut self, now: DateTime<Utc>) -> ();
 
     /// Flushes unwritten timings to the database.
