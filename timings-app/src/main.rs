@@ -2,8 +2,10 @@ use chrono::Duration;
 use clap::Parser;
 use futures::StreamExt;
 use ksni::TrayMethods;
+use log::trace;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::thread;
 use timings::TimingsMutations;
@@ -13,13 +15,20 @@ use virtual_desktops::KDEVirtualDesktopController;
 use virtual_desktops::VirtualDesktopController;
 use virtual_desktops::VirtualDesktopMessage;
 
+const DEFAULT_DATABASE: &str = "~/.config/timings/timings.db";
+
 #[derive(Parser)]
 #[command(name = "timings-app")]
 #[command(about = "Virtual desktop timings tracker", long_about = None)]
 struct Cli {
     /// Path to the SQLite database file (e.g., timings.db or sqlite::memory:
     /// for in-memory)
+    #[cfg(debug_assertions)]
     #[arg(short, long, default_value = "sqlite::memory:")]
+    database: String,
+
+    #[cfg(not(debug_assertions))]
+    #[arg(short, long, default_value = DEFAULT_DATABASE)]
     database: String,
 
     /// Minimum timing duration in seconds (timings shorter than this are
@@ -172,20 +181,21 @@ impl VirtualDesktopTimingsRecorder {
         Ok(())
     }
 
-    /// Shows daily totals from the past two weeks.
+    /// Shows daily totals from the past 6 months.
     pub async fn show_daily_totals(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         use timings::TimingsQueries;
 
         let mut conn = self.pool.acquire().await?;
         let end_date = chrono::Utc::now();
-        let start_date = end_date - chrono::Duration::days(14);
+        let start_date = end_date - chrono::Duration::days(180);
 
-        let totals = conn
+        let mut totals = conn
             .get_timings_daily_totals(start_date, end_date, None, None)
             .await?;
+        totals.reverse();
 
         if totals.is_empty() {
-            println!("No timings found for the past two weeks.");
+            println!("No timings found for the past 6 months.");
             return Ok(());
         }
 
@@ -223,6 +233,34 @@ impl VirtualDesktopTimingsRecorder {
     }
 }
 
+/// Expands ~ to the home directory and ensures parent directories exist (only
+/// for DEFAULT_DATABASE)
+async fn expand_path(path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let expanded = if path.starts_with("~") {
+        if let Some(home) = std::env::var_os("HOME") {
+            PathBuf::from(home).join(path.strip_prefix("~/").unwrap_or(&path[1..]))
+        } else {
+            PathBuf::from(path)
+        }
+    } else {
+        PathBuf::from(path)
+    };
+
+    // Create parent directories only if they don't exist and path matches
+    // DEFAULT_DATABASE
+    if path == DEFAULT_DATABASE {
+        if let Some(parent) = expanded.parent() {
+            trace!(
+                "Creating parent directories for database path: {:?}",
+                parent
+            );
+            tokio::fs::create_dir_all(parent).await?;
+        }
+    }
+
+    Ok(expanded.to_string_lossy().to_string())
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(
@@ -231,8 +269,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .init();
     let cli = Cli::parse();
 
+    let database_path = expand_path(&cli.database).await?;
+
     let mut vd_timings_recorder =
-        VirtualDesktopTimingsRecorder::new(&cli.database, Duration::seconds(cli.minimum_timing))
+        VirtualDesktopTimingsRecorder::new(&database_path, Duration::seconds(cli.minimum_timing))
             .await?;
 
     let desktop_controller = KDEVirtualDesktopController::new().await?;
@@ -325,7 +365,7 @@ fn spawn_stdin_reader(app_message_sender: tokio::sync::mpsc::UnboundedSender<App
         println!("Commands:");
         println!("Q: Exit");
         println!("1: Write timings to database");
-        println!("2: Show daily totals from past two weeks");
+        println!("2: Show daily totals from past 6 months");
         println!("Type command and press Enter: ");
     }
     // let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
