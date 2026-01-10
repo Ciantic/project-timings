@@ -9,7 +9,8 @@ path = "src/lib.rs"
 
 [dependencies]
 futures = "0.3.31"
-serde = "1.0.228"
+serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "time"] }
 zbus = "5.13"
 zbus_macros = "5.13"
+zvariant = "5.9"
