@@ -34,6 +34,93 @@ impl DbusMenu {
     ) -> zbus::fdo::Result<(u32, Layout)> {
         println!("get_layout called for parent_id {}", parent_id);
         if parent_id == 0 {
+            // Checkable item example:
+            let mut checked_item_properties = HashMap::new();
+            checked_item_properties.insert(
+                "label".to_string(),
+                OwnedValue::try_from(Value::new("Checkable item (checked)")).unwrap(),
+            );
+            checked_item_properties.insert(
+                "toggle-type".to_string(),
+                OwnedValue::try_from(Value::new("checkbox")).unwrap(),
+            );
+            checked_item_properties.insert(
+                "toggle-state".to_string(),
+                OwnedValue::try_from(Value::new(1i32)).unwrap(),
+            );
+
+            let checked_child = Layout {
+                id: 1,
+                properties: checked_item_properties,
+                children: vec![],
+            };
+
+            let mut unchecked_item_properties = HashMap::new();
+            unchecked_item_properties.insert(
+                "label".to_string(),
+                OwnedValue::try_from(Value::new("Checkable item (unchecked)")).unwrap(),
+            );
+            unchecked_item_properties.insert(
+                "toggle-type".to_string(),
+                OwnedValue::try_from(Value::new("checkbox")).unwrap(),
+            );
+            unchecked_item_properties.insert(
+                "toggle-state".to_string(),
+                OwnedValue::try_from(Value::new(0i32)).unwrap(),
+            );
+
+            let unchecked_child = Layout {
+                id: 2,
+                properties: unchecked_item_properties,
+                children: vec![],
+            };
+
+            // Submenu example:
+            let mut submenu_option1_properties = HashMap::new();
+            submenu_option1_properties.insert(
+                "label".to_string(),
+                OwnedValue::try_from(Value::new("Option 1")).unwrap(),
+            );
+
+            let submenu_option1 = Layout {
+                id: 10,
+                properties: submenu_option1_properties,
+                children: vec![],
+            };
+
+            let mut submenu_option2_properties = HashMap::new();
+            submenu_option2_properties.insert(
+                "label".to_string(),
+                OwnedValue::try_from(Value::new("Option 2")).unwrap(),
+            );
+
+            let submenu_option2 = Layout {
+                id: 11,
+                properties: submenu_option2_properties,
+                children: vec![],
+            };
+
+            let mut submenu_properties = HashMap::new();
+            submenu_properties.insert(
+                "label".to_string(),
+                OwnedValue::try_from(Value::new("Submenu")).unwrap(),
+            );
+            submenu_properties.insert(
+                "children-display".to_string(),
+                OwnedValue::try_from(Value::new("submenu")).unwrap(),
+            );
+
+            let submenu = Layout {
+                id: 4,
+                properties: submenu_properties,
+                children: vec![
+                    OwnedValue::try_from(submenu_option1).unwrap(),
+                    OwnedValue::try_from(submenu_option2).unwrap(),
+                ],
+            };
+
+            // Regular item example:
+
             let mut quit_properties = HashMap::new();
             quit_properties.insert(
                 "label".to_string(),
@@ -41,7 +128,7 @@ impl DbusMenu {
             );
 
             let quit_child = Layout {
-                id: 1,
+                id: 3,
                 properties: quit_properties,
                 children: vec![],
             };
@@ -51,7 +138,49 @@ impl DbusMenu {
                 Layout {
                     id: parent_id,
                     properties: HashMap::new(),
-                    children: vec![OwnedValue::try_from(quit_child).unwrap()],
+                    children: vec![
+                        OwnedValue::try_from(checked_child).unwrap(),
+                        OwnedValue::try_from(unchecked_child).unwrap(),
+                        OwnedValue::try_from(submenu).unwrap(),
+                        OwnedValue::try_from(quit_child).unwrap(),
+                    ],
+                },
+            ))
+        } else if parent_id == 4 {
+            // Submenu layout
+            let mut submenu_option1_properties = HashMap::new();
+            submenu_option1_properties.insert(
+                "label".to_string(),
+                OwnedValue::try_from(Value::new("Option 1")).unwrap(),
+            );
+
+            let submenu_option1 = Layout {
+                id: 10,
+                properties: submenu_option1_properties,
+                children: vec![],
+            };
+
+            let mut submenu_option2_properties = HashMap::new();
+            submenu_option2_properties.insert(
+                "label".to_string(),
+                OwnedValue::try_from(Value::new("Option 2")).unwrap(),
+            );
+
+            let submenu_option2 = Layout {
+                id: 11,
+                properties: submenu_option2_properties,
+                children: vec![],
+            };
+
+            Ok((
+                0,
+                Layout {
+                    id: parent_id,
+                    properties: HashMap::new(),
+                    children: vec![
+                        OwnedValue::try_from(submenu_option1).unwrap(),
+                        OwnedValue::try_from(submenu_option2).unwrap(),
+                    ],
                 },
             ))
         } else {
