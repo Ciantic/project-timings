@@ -1,6 +1,13 @@
 mod dbus_menu;
-pub mod status_notifier_item;
+mod error;
+mod icon;
+mod menubuilder;
+mod status_notifier_item;
 mod status_notifier_item_impl;
-pub mod status_notifier_watcher;
+mod status_notifier_watcher;
 pub use dbus_menu::DbusMenu;
+pub use error::Error;
+pub use icon::*;
+pub use menubuilder::*;
 pub use status_notifier_item_impl::StatusNotifierItemImpl;
+pub use status_notifier_watcher::StatusNotifierWatcherProxy;

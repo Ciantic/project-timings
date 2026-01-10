@@ -1,6 +1,6 @@
 use tray_icon::DbusMenu;
 use tray_icon::StatusNotifierItemImpl;
-use tray_icon::status_notifier_watcher::StatusNotifierWatcherProxy;
+use tray_icon::StatusNotifierWatcherProxy;
 use zbus::names::OwnedWellKnownName;
 
 // Although we use `tokio` here, you can use any async runtime of choice.
