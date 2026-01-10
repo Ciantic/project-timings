@@ -1,15 +1,15 @@
 [package]
-name = "virtual-desktops"
+name = "tray-icon"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "virtual_desktops"
+name = "tray_icon"
 path = "src/lib.rs"
 
 [dependencies]
 futures = "0.3.31"
 serde = "1.0.228"
-tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "time"] }
 zbus = "5.13"
 zbus_macros = "5.13"

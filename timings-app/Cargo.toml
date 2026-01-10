@@ -7,7 +7,7 @@ version = "0.0.1"
 
 [dependencies]
 ksni = { version = "0.3.3", features = ["blocking"] }
-tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 clap = { version = "4.5", features = ["derive"] }
 
 virtual-desktops = { path = "../virtual-desktops" }
@@ -16,5 +16,9 @@ timings = { path = "../timings" }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 futures = "0.3.31"
 chrono = { version = "0.4", features = ["serde"] }
-log = "0.4.28"
+log = "0.4.29"
 env_logger = "0.11"
+
+zbus = "5.13"
+zbus_macros = "5.13"
+zvariant = "5"
