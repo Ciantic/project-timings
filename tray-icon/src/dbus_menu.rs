@@ -32,6 +32,7 @@ impl DbusMenu {
         _recursion_depth: i32,
         _property_names: Vec<String>,
     ) -> zbus::fdo::Result<(u32, Layout)> {
+        println!("get_layout called for parent_id {}", parent_id);
         if parent_id == 0 {
             let mut quit_properties = HashMap::new();
             quit_properties.insert(
@@ -83,6 +84,13 @@ impl DbusMenu {
         _data: OwnedValue,
         _timestamp: u32,
     ) -> zbus::fdo::Result<()> {
+        println!(
+            "Event received for id {} {} {} {}",
+            _id,
+            _event_id,
+            _timestamp,
+            _data.to_string()
+        );
         Ok(())
     }
 
