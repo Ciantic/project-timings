@@ -2,9 +2,6 @@
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::fmt;
-use std::fmt::Display;
-use std::fmt::Formatter;
 use zbus::Connection;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedValue;
@@ -32,23 +29,41 @@ impl DbusMenu {
     async fn get_layout(
         &self,
         parent_id: i32,
-        recursion_depth: i32,
-        property_names: Vec<String>,
+        _recursion_depth: i32,
+        _property_names: Vec<String>,
     ) -> zbus::fdo::Result<(u32, Layout)> {
-        Ok((
-            0,
-            Layout {
-                id: parent_id,
-                properties: HashMap::new(),
+        if parent_id == 0 {
+            let mut quit_properties = HashMap::new();
+            quit_properties.insert(
+                "label".to_string(),
+                OwnedValue::try_from(Value::new("Quit")).unwrap(),
+            );
+
+            let quit_child = Layout {
+                id: 1,
+                properties: quit_properties,
                 children: vec![],
-            },
-        ))
+            };
+
+            Ok((
+                0,
+                Layout {
+                    id: parent_id,
+                    properties: HashMap::new(),
+                    children: vec![OwnedValue::try_from(quit_child).unwrap()],
+                },
+            ))
+        } else {
+            Err(zbus::fdo::Error::InvalidArgs(
+                "parentId not found".to_string(),
+            ))
+        }
     }
 
     async fn get_group_properties(
         &self,
-        ids: Vec<i32>,
-        property_names: Vec<String>,
+        _ids: Vec<i32>,
+        _property_names: Vec<String>,
     ) -> zbus::fdo::Result<Vec<(i32, HashMap<String, OwnedValue>)>> {
         Ok(Vec::new())
     }
@@ -62,19 +77,19 @@ impl DbusMenu {
 
     async fn event(
         &self,
-        #[zbus(connection)] conn: &Connection,
-        id: i32,
-        event_id: String,
-        data: OwnedValue,
-        timestamp: u32,
+        #[zbus(connection)] _conn: &Connection,
+        _id: i32,
+        _event_id: String,
+        _data: OwnedValue,
+        _timestamp: u32,
     ) -> zbus::fdo::Result<()> {
         Ok(())
     }
 
     async fn event_group(
         &self,
-        #[zbus(connection)] conn: &Connection,
-        events: Vec<(i32, String, OwnedValue, u32)>,
+        #[zbus(connection)] _conn: &Connection,
+        _events: Vec<(i32, String, OwnedValue, u32)>,
     ) -> zbus::fdo::Result<Vec<i32>> {
         Ok(vec![])
     }

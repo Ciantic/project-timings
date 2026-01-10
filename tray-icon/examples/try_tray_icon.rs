@@ -1,3 +1,4 @@
+use tray_icon::DbusMenu;
 use tray_icon::StatusNotifierItemImpl;
 use tray_icon::status_notifier_watcher::StatusNotifierWatcherProxy;
 use zbus::names::OwnedWellKnownName;
@@ -23,6 +24,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .at("/StatusNotifierItem", item)
         .await?;
 
+    // Register the dbus menu at the conventional path
+    let menu = DbusMenu::new();
+    connection.object_server().at("/MenuBar", menu).await?;
+
     // Create the StatusNotifierWatcher proxy and register our item
     let proxy = StatusNotifierWatcherProxy::builder(&connection)
         .destination("org.kde.StatusNotifierWatcher")?
@@ -37,8 +42,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(registered) => println!("StatusNotifierHost registered: {}", registered),
         Err(e) => println!("Failed to check host registration: {:?}", e),
     }
-
-    let service_path = format!("{}/StatusNotifierItem", unique_name);
 
     match proxy.register_status_notifier_item(&unique_name).await {
         Ok(_) => println!("Successfully registered as: {}", unique_name),
