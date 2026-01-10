@@ -11,6 +11,8 @@
 //!
 //! [Writing a client proxy]: https://z-galaxy.github.io/zbus/client.html
 //! [D-Bus standard interfaces]: https://dbus.freedesktop.org/doc/dbus-specification.html#standard-interfaces,
+//!
+//! Generated from: https://github.com/KDE/kstatusnotifieritem/blob/master/src/org.kde.StatusNotifierItem.xml
 use zbus::proxy;
 #[proxy(interface = "org.kde.StatusNotifierItem", assume_defaults = true)]
 pub trait StatusNotifierItem {
