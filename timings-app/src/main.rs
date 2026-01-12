@@ -10,14 +10,16 @@ use std::thread;
 use timings::TimingsMutations;
 use timings::TimingsRecording;
 use tokio::sync::mpsc::UnboundedSender;
+use trayicon::Icon;
 use trayicon::MenuBuilder;
-use trayicon::TrayIcon;
 use trayicon::TrayIconBuilder;
 use virtual_desktops::KDEVirtualDesktopController;
 use virtual_desktops::VirtualDesktopController;
 use virtual_desktops::VirtualDesktopMessage;
 
 const DEFAULT_DATABASE: &str = "~/.config/timings/timings.db";
+const ICON_GREEN: &[u8] = include_bytes!("../resources/green.ico");
+const ICON_RED: &[u8] = include_bytes!("../resources/red.ico");
 
 #[derive(Parser)]
 #[command(name = "timings-app")]
@@ -47,6 +49,8 @@ enum AppMessage {
     ShowDailyTotals,
     VirtualDesktop(VirtualDesktopMessage),
     VirtualDesktopThreadExited,
+    StartedTiming(String, String),
+    StoppedTiming,
 }
 
 struct VirtualDesktopTimingsRecorder {
@@ -54,12 +58,14 @@ struct VirtualDesktopTimingsRecorder {
     project: Option<String>,
     timings_recorder: timings::TimingsRecorder,
     pool: SqlitePool,
+    sender: UnboundedSender<AppMessage>,
 }
 
 impl VirtualDesktopTimingsRecorder {
     pub async fn new(
         database: &str,
         minimum_timing: Duration,
+        sender: UnboundedSender<AppMessage>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let options = SqliteConnectOptions::from_str(database)?.create_if_missing(true);
 
@@ -75,6 +81,7 @@ impl VirtualDesktopTimingsRecorder {
             project: None,
             timings_recorder,
             pool,
+            sender,
         })
     }
 
@@ -98,7 +105,8 @@ impl VirtualDesktopTimingsRecorder {
                 old_project
             );
             self.timings_recorder
-                .start_timing(client, project, chrono::Utc::now());
+                .start_timing(client.clone(), project.clone(), chrono::Utc::now());
+            let _ = self.sender.send(AppMessage::StartedTiming(client, project));
             true
         } else {
             log::warn!(
@@ -106,6 +114,7 @@ impl VirtualDesktopTimingsRecorder {
                 desktop_name
             );
             self.timings_recorder.stop_timing(chrono::Utc::now());
+            let _ = self.sender.send(AppMessage::StoppedTiming);
             false
         }
     }
@@ -114,6 +123,7 @@ impl VirtualDesktopTimingsRecorder {
     pub fn stop_timing(&mut self) {
         log::info!("Stopping timing");
         self.timings_recorder.stop_timing(chrono::Utc::now());
+        let _ = self.sender.send(AppMessage::StoppedTiming);
     }
 
     pub fn resume_timing(&mut self) {
@@ -128,6 +138,9 @@ impl VirtualDesktopTimingsRecorder {
 
             self.timings_recorder
                 .start_timing(client.clone(), project.clone(), chrono::Utc::now());
+            let _ = self
+                .sender
+                .send(AppMessage::StartedTiming(client.clone(), project.clone()));
         }
     }
 
@@ -237,9 +250,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let database_path = expand_path(&cli.database).await?;
 
-    let mut vd_timings_recorder =
-        VirtualDesktopTimingsRecorder::new(&database_path, Duration::seconds(cli.minimum_timing))
-            .await?;
+    let (appmsg_sender, mut appmsgs) = tokio::sync::mpsc::unbounded_channel::<AppMessage>();
+
+    let mut vd_timings_recorder = VirtualDesktopTimingsRecorder::new(
+        &database_path,
+        Duration::seconds(cli.minimum_timing),
+        appmsg_sender.clone(),
+    )
+    .await?;
 
     let desktop_controller = KDEVirtualDesktopController::new().await?;
     let current_desktop = desktop_controller.get_current_desktop().await?;
@@ -251,14 +269,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize timing for the current desktop
     vd_timings_recorder.start_timing_from_desktop_name(&current_desktop_name);
 
-    let (appmsg_sender, mut appmsgs) = tokio::sync::mpsc::unbounded_channel::<AppMessage>();
-
     let tray_icon_sender = appmsg_sender.clone();
+    let green_icon = Icon::from_buffer(ICON_GREEN, None, None)?;
+    let red_icon = Icon::from_buffer(ICON_RED, None, None)?;
     let mut tray_icon = TrayIconBuilder::new()
         .sender(move |m: &AppMessage| {
             let _ = tray_icon_sender.send(m.clone());
         })
-        .icon_from_buffer(ICON_GREEN)
+        .icon(green_icon.clone())
         .tooltip(format!("Timings: {}", current_desktop_name).as_str())
         .menu(
             MenuBuilder::new()
@@ -320,6 +338,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                      application."
                 );
                 break Err("Virtual desktop listener thread has exited".into());
+            }
+            Some(AppMessage::StartedTiming(client, project)) => {
+                log::trace!("Started timing: client='{}', project='{}'", client, project);
+                let _ = tray_icon.set_icon(&green_icon);
+            }
+            Some(AppMessage::StoppedTiming) => {
+                log::trace!("Stopped timing");
+                let _ = tray_icon.set_icon(&red_icon);
             }
             None => {
                 break Ok(());
@@ -409,5 +435,3 @@ fn spawn_keepalive_thread(app_message_sender: tokio::sync::mpsc::UnboundedSender
         }
     });
 }
-const ICON_GREEN: &[u8] = include_bytes!("../resources/green.ico");
-const ICON_RED: &[u8] = include_bytes!("../resources/red.ico");
