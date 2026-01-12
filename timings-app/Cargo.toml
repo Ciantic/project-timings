@@ -6,7 +6,7 @@ publish = false
 version = "0.0.1"
 
 [dependencies]
-ksni = { version = "0.3.3", features = ["blocking"] }
+trayicon = { git = "https://github.com/Ciantic/trayicon-rs", branch = "master" }
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 clap = { version = "4.5", features = ["derive"] }
 
@@ -18,7 +18,3 @@ futures = "0.3.31"
 chrono = { version = "0.4", features = ["serde"] }
 log = "0.4.29"
 env_logger = "0.11"
-
-zbus = "5.13"
-zbus_macros = "5.13"
-zvariant = "5"

@@ -1,6 +1,6 @@
 
 [workspace]
-members = ["timings", "timings-app", "virtual-desktops", "tray-icon"]
+members = ["timings", "timings-app", "virtual-desktops"]
 
 [patch.crates-io]
 ksni = { path = "/home/jarppa/dep-projects/ksni" }

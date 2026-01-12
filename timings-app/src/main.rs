@@ -1,7 +1,6 @@
 use chrono::Duration;
 use clap::Parser;
 use futures::StreamExt;
-use ksni::TrayMethods;
 use log::trace;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
@@ -11,6 +10,9 @@ use std::thread;
 use timings::TimingsMutations;
 use timings::TimingsRecording;
 use tokio::sync::mpsc::UnboundedSender;
+use trayicon::MenuBuilder;
+use trayicon::TrayIcon;
+use trayicon::TrayIconBuilder;
 use virtual_desktops::KDEVirtualDesktopController;
 use virtual_desktops::VirtualDesktopController;
 use virtual_desktops::VirtualDesktopMessage;
@@ -37,11 +39,7 @@ struct Cli {
     minimum_timing: i64,
 }
 
-struct TrayState {
-    current_desktop_name: String,
-    notifier: UnboundedSender<AppMessage>,
-}
-
+#[derive(PartialEq, Clone)]
 enum AppMessage {
     Exit,
     WriteTimings,
@@ -49,43 +47,6 @@ enum AppMessage {
     ShowDailyTotals,
     VirtualDesktop(VirtualDesktopMessage),
     VirtualDesktopThreadExited,
-}
-
-impl ksni::Tray for TrayState {
-    fn id(&self) -> String {
-        env!("CARGO_PKG_NAME").into()
-    }
-
-    fn icon_name(&self) -> String {
-        "help-about".into()
-    }
-
-    fn title(&self) -> String {
-        "Timings".into()
-    }
-
-    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        println!("Open menu?");
-        use ksni::menu::*;
-        vec![
-            StandardItem {
-                label: "Desktop: ".to_string() + &self.current_desktop_name,
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: "Exit".into(),
-                icon_name: "application-exit".into(),
-                activate: Box::new(|this: &mut Self| {
-                    this.notifier
-                        .send(AppMessage::Exit)
-                        .expect("Main thread is not listening");
-                }),
-                ..Default::default()
-            }
-            .into(),
-        ]
-    }
 }
 
 struct VirtualDesktopTimingsRecorder {
@@ -292,15 +253,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (appmsg_sender, mut appmsgs) = tokio::sync::mpsc::unbounded_channel::<AppMessage>();
 
-    let tray_state = TrayState {
-        current_desktop_name: current_desktop_name.clone(),
-        notifier: appmsg_sender.clone(),
-        // app_state: Arc::clone(&state),
-    };
-    let tray_state = tray_state
-        // .disable_dbus_name(ashpd::is_sandboxed().await) // For flatpak apps
-        .spawn()
-        .await?;
+    let tray_icon_sender = appmsg_sender.clone();
+    let mut tray_icon = TrayIconBuilder::new()
+        .sender(move |m: &AppMessage| {
+            let _ = tray_icon_sender.send(m.clone());
+        })
+        .icon_from_buffer(ICON_GREEN)
+        .tooltip(format!("Timings: {}", current_desktop_name).as_str())
+        .menu(
+            MenuBuilder::new()
+                .item("Show daily totals", AppMessage::ShowDailyTotals)
+                .item("Exit", AppMessage::Exit),
+        )
+        .build()?;
 
     spawn_stdin_reader(appmsg_sender.clone());
     spawn_write_timings_thread(appmsg_sender.clone());
@@ -329,11 +294,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(AppMessage::VirtualDesktop(vd_msg)) => match vd_msg {
                 VirtualDesktopMessage::DesktopNameChanged(_id, name) => {
                     vd_timings_recorder.start_timing_from_desktop_name(&name);
-                    tray_state
-                        .update(|s| {
-                            s.current_desktop_name = name;
-                        })
-                        .await;
+                    let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
                 }
                 VirtualDesktopMessage::DesktopChange(id) => {
                     let name = desktop_controller
@@ -341,11 +302,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .await
                         .unwrap_or_else(|_| "Unknown".to_string());
                     vd_timings_recorder.start_timing_from_desktop_name(&name);
-                    tray_state
-                        .update(|s| {
-                            s.current_desktop_name = name;
-                        })
-                        .await;
+                    let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
                 }
                 VirtualDesktopMessage::ScreenSaveInactive => {
                     log::trace!("Screen saver in-active");
@@ -452,3 +409,5 @@ fn spawn_keepalive_thread(app_message_sender: tokio::sync::mpsc::UnboundedSender
         }
     });
 }
+const ICON_GREEN: &[u8] = include_bytes!("../resources/green.ico");
+const ICON_RED: &[u8] = include_bytes!("../resources/red.ico");
