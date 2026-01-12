@@ -1,6 +1,3 @@
-
 [workspace]
+resolver = "3"
 members = ["timings", "timings-app", "virtual-desktops", "idle-monitor"]
-
-[patch.crates-io]
-ksni = { path = "/home/jarppa/dep-projects/ksni" }

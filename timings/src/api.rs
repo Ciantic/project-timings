@@ -40,6 +40,7 @@ pub struct SummaryForDay {
 ///
 /// This is implemented for &mut SqliteConnection in
 /// repository/timings_queries.rs
+#[allow(async_fn_in_trait)]
 pub trait TimingsQueries {
     async fn get_timings(
         &mut self,
@@ -68,6 +69,7 @@ pub trait TimingsQueries {
 ///
 /// This is implemented for &mut SqliteConnection in
 /// repository/timings_mutations.rs
+#[allow(async_fn_in_trait)]
 pub trait TimingsMutations {
     async fn create_timings_database(&mut self) -> Result<(), Error>;
 
@@ -83,6 +85,7 @@ pub trait TimingsMutations {
     ) -> Result<(), Error>;
 }
 
+#[allow(async_fn_in_trait)]
 pub trait TimingsRecording {
     /// Starts a new timing for the given client and project at the given time.
     fn start_timing(&mut self, client: String, project: String, now: DateTime<Utc>) -> ();

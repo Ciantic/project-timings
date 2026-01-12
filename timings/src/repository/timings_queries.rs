@@ -18,15 +18,15 @@ use sqlx::Sqlite;
 use sqlx::SqliteConnection;
 use sqlx::query_builder::QueryBuilder;
 
-#[derive(Debug, Clone)]
-struct Summary {
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
-    pub text: String,
-    pub client: String,
-    pub project: String,
-    pub archived: bool,
-}
+// #[derive(Debug, Clone)]
+// struct Summary {
+//     pub start: DateTime<Utc>,
+//     pub end: DateTime<Utc>,
+//     pub text: String,
+//     pub client: String,
+//     pub project: String,
+//     pub archived: bool,
+// }
 
 // Trait implementations for &mut SqliteConnection
 impl TimingsQueries for SqliteConnection {
@@ -242,7 +242,7 @@ impl TimingsQueries for SqliteConnection {
         #[derive(sqlx::FromRow)]
         struct DailySummaryRow {
             start: i64,
-            end: i64,
+            // end: i64,
             summary: String,
             client: String,
             project: String,

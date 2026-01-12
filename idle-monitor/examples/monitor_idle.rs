@@ -1,7 +1,6 @@
 use idle_monitor::run_idle_monitor;
 use idle_monitor::IdleNotification;
 use std::sync::mpsc::channel;
-use std::sync::Arc;
 use std::time::Duration;
 
 enum AppMessages {

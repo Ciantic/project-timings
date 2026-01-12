@@ -39,6 +39,7 @@ pub enum VirtualDesktopMessage {
     DesktopNameChanged(DesktopId, String),
 }
 
+#[allow(async_fn_in_trait)]
 pub trait VirtualDesktopController {
     async fn listen(&mut self) -> Result<impl Stream<Item = VirtualDesktopMessage>, Error>;
 
