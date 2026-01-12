@@ -35,8 +35,6 @@ impl std::fmt::Display for DesktopId {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VirtualDesktopMessage {
-    ScreenSaveInactive,
-    ScreenSaverActive,
     DesktopChange(DesktopId),
     DesktopNameChanged(DesktopId, String),
 }

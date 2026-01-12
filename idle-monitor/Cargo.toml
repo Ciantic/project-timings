@@ -1,0 +1,16 @@
+[package]
+name = "idle-monitor"
+description = "Send notifications when the system is idle"
+version = "0.1.0"
+license = "MIT"
+license-file = "LICENSE.txt"
+edition = "2021"
+
+[dependencies]
+smithay-client-toolkit = "0.20.0"
+wayland-client = "0.31.12"
+wayland-protocols = "0.32.10"
+
+[lib]
+name = "idle_monitor"
+path = "src/lib.rs"

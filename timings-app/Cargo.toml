@@ -11,6 +11,7 @@ tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 clap = { version = "4.5", features = ["derive"] }
 
 virtual-desktops = { path = "../virtual-desktops" }
+idle-monitor = { path = "../idle-monitor" }
 timings = { path = "../timings" }
 
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }

@@ -1,6 +1,7 @@
 use chrono::Duration;
 use clap::Parser;
 use futures::StreamExt;
+use idle_monitor::run_idle_monitor;
 use log::trace;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
@@ -51,6 +52,8 @@ enum AppMessage {
     VirtualDesktopThreadExited,
     StartedTiming(String, String),
     StoppedTiming,
+    UserIdled,
+    UserResumed,
 }
 
 struct VirtualDesktopTimingsRecorder {
@@ -285,6 +288,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .build()?;
 
+    spawn_idle_monitor_thread(appmsg_sender.clone());
     spawn_stdin_reader(appmsg_sender.clone());
     spawn_write_timings_thread(appmsg_sender.clone());
     spawn_keepalive_thread(appmsg_sender.clone());
@@ -322,15 +326,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     vd_timings_recorder.start_timing_from_desktop_name(&name);
                     let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
                 }
-                VirtualDesktopMessage::ScreenSaveInactive => {
-                    log::trace!("Screen saver in-active");
-                    vd_timings_recorder.resume_timing();
-                }
-                VirtualDesktopMessage::ScreenSaverActive => {
-                    log::trace!("Screen saver active");
-                    vd_timings_recorder.stop_timing();
-                }
             },
+            Some(AppMessage::UserIdled) => {
+                log::trace!("User activity changed to idling");
+                vd_timings_recorder.stop_timing();
+            }
+            Some(AppMessage::UserResumed) => {
+                log::trace!("User activity changed to resumed");
+                vd_timings_recorder.resume_timing();
+            }
             Some(AppMessage::VirtualDesktopThreadExited) => {
                 log::warn!(
                     "Virtual desktop listener thread has exited, this happens if the D-Bus \
@@ -431,6 +435,35 @@ fn spawn_keepalive_thread(app_message_sender: tokio::sync::mpsc::UnboundedSender
             if app_message_sender.send(AppMessage::KeepAlive).is_err() {
                 // Main thread has exited, stop the loop
                 break;
+            }
+        }
+    });
+}
+
+/// Spawns a thread that runs the idle monitor
+fn spawn_idle_monitor_thread(app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>) {
+    thread::spawn(move || {
+        let monitor_thread = run_idle_monitor(
+            move |i| match i {
+                idle_monitor::IdleNotification::Idle => {
+                    let _ = app_message_sender.send(AppMessage::UserIdled);
+                }
+                idle_monitor::IdleNotification::Resumed => {
+                    let _ = app_message_sender.send(AppMessage::UserResumed);
+                }
+            },
+            std::time::Duration::from_secs(60 * 3), // 3 minutes
+        );
+
+        match monitor_thread.join() {
+            Ok(Ok(())) => {
+                log::info!("Idle monitor completed successfully");
+            }
+            Ok(Err(e)) => {
+                log::error!("Idle monitor error: {}", e);
+            }
+            Err(_) => {
+                log::error!("Idle monitor thread panic");
             }
         }
     });

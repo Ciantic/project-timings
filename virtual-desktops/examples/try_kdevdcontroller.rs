@@ -41,12 +41,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let name = query_controller.get_desktop_name(&id).await?;
                 println!("Desktop changed! New desktop ID: {} with name {}", id, name);
             }
-            VirtualDesktopMessage::ScreenSaveInactive => {
-                println!("Screen saver deactivated");
-            }
-            VirtualDesktopMessage::ScreenSaverActive => {
-                println!("Screen saver activated");
-            }
         }
     }
 
