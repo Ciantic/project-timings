@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx) = channel::<AppMessages>();
 
     // Spawn the idle monitor in a background thread (5 second timeout)
-    let monitor_thread = run_idle_monitor(
+    run_idle_monitor(
         move |i| {
             tx.send(AppMessages::IdleNotification(i)).unwrap();
         },
@@ -33,19 +33,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("✅ User activity resumed!");
             }
             AppMessages::Something => {}
-        }
-    }
-
-    // Wait for the monitor thread to finish
-    match monitor_thread.join() {
-        Ok(Ok(())) => {
-            println!("Monitor completed successfully");
-        }
-        Ok(Err(e)) => {
-            eprintln!("Monitor error: {}", e);
-        }
-        Err(_) => {
-            eprintln!("Thread panic");
         }
     }
 

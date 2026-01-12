@@ -2,7 +2,6 @@ use smithay_client_toolkit::reexports::client::protocol::wl_seat::WlSeat;
 use smithay_client_toolkit::reexports::client::Connection;
 use smithay_client_toolkit::reexports::client::Dispatch;
 use smithay_client_toolkit::reexports::client::QueueHandle;
-use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use wayland_client::protocol::wl_registry;
