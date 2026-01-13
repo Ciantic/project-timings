@@ -39,7 +39,7 @@ struct Cli {
     /// Minimum timing duration in seconds (timings shorter than this are
     /// ignored)
     #[arg(short, long, default_value_t = 3)]
-    minimum_timing: i64,
+    minimum_timing: u64,
 
     /// Idle timeout in seconds (how long before user is considered idle)
     ///
@@ -263,7 +263,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut vd_timings_recorder = VirtualDesktopTimingsRecorder::new(
         &database_path,
-        Duration::seconds(cli.minimum_timing),
+        Duration::seconds(cli.minimum_timing as i64),
         appmsg_sender.clone(),
     )
     .await?;
