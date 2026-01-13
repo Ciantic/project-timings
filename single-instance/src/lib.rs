@@ -60,12 +60,11 @@ pub fn only_single_instance(
     // First check if we can acquire the name
     let can_acquire = block_on(async {
         let connection = Connection::session().await?;
-        let flags = zbus::fdo::RequestNameFlags::DoNotQueue.into();
         let reply = zbus::fdo::DBusProxy::new(&connection)
             .await?
             .request_name(
                 zbus::names::WellKnownName::from_string_unchecked(bus_name.clone()),
-                flags,
+                zbus::fdo::RequestNameFlags::DoNotQueue.into(),
             )
             .await?;
 
@@ -99,21 +98,19 @@ pub fn only_single_instance(
             let connection = Connection::session().await.unwrap();
 
             // Acquire the D-Bus name (should succeed since we just checked)
-            let flags = zbus::fdo::RequestNameFlags::DoNotQueue.into();
             zbus::fdo::DBusProxy::new(&connection)
                 .await
                 .unwrap()
                 .request_name(
                     zbus::names::WellKnownName::from_string_unchecked(bus_name.clone()),
-                    flags,
+                    zbus::fdo::RequestNameFlags::DoNotQueue.into(),
                 )
                 .await
                 .unwrap();
 
             // Register the D-Bus service
-            let callback = Arc::new(Mutex::new(callback));
             let service = SingleInstanceService {
-                callback: callback.clone(),
+                callback: Arc::new(Mutex::new(callback)),
             };
 
             connection
