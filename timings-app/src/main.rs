@@ -40,6 +40,12 @@ struct Cli {
     /// ignored)
     #[arg(short, long, default_value_t = 3)]
     minimum_timing: i64,
+
+    /// Idle timeout in seconds (how long before user is considered idle)
+    ///
+    /// Set to 0 to disable idle monitoring.
+    #[arg(short = 't', long, default_value_t = 180)]
+    idle_timeout: u64,
 }
 
 #[derive(PartialEq, Clone)]
@@ -288,7 +294,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .build()?;
 
-    spawn_idle_monitor_thread(appmsg_sender.clone());
+    spawn_idle_monitor_thread(appmsg_sender.clone(), cli.idle_timeout);
     spawn_stdin_reader(appmsg_sender.clone());
     spawn_write_timings_thread(appmsg_sender.clone());
     spawn_keepalive_thread(appmsg_sender.clone());
@@ -441,7 +447,15 @@ fn spawn_keepalive_thread(app_message_sender: tokio::sync::mpsc::UnboundedSender
 }
 
 /// Spawns a thread that runs the idle monitor
-fn spawn_idle_monitor_thread(app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>) {
+fn spawn_idle_monitor_thread(
+    app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>,
+    idle_timeout: u64,
+) {
+    if idle_timeout == 0 {
+        log::info!("Idle timeout is 0, not starting idle monitor");
+        return;
+    }
+
     thread::spawn(move || {
         let monitor_thread = run_idle_monitor(
             move |i| match i {
@@ -452,7 +466,7 @@ fn spawn_idle_monitor_thread(app_message_sender: tokio::sync::mpsc::UnboundedSen
                     let _ = app_message_sender.send(AppMessage::UserResumed);
                 }
             },
-            std::time::Duration::from_secs(60 * 3), // 3 minutes
+            std::time::Duration::from_secs(idle_timeout),
         );
 
         match monitor_thread.join() {
