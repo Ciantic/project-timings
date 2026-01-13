@@ -1,3 +1,5 @@
+mod overlay;
+use crate::overlay::init_project_timings_gui;
 use chrono::Duration;
 use clap::Parser;
 use futures::StreamExt;
@@ -11,6 +13,7 @@ use std::str::FromStr;
 use std::thread;
 use timings::TimingsMutations;
 use timings::TimingsRecording;
+use tokio::select;
 use tokio::sync::mpsc::UnboundedSender;
 use trayicon::Icon;
 use trayicon::MenuBuilder;
@@ -18,6 +21,7 @@ use trayicon::TrayIconBuilder;
 use virtual_desktops::KDEVirtualDesktopController;
 use virtual_desktops::VirtualDesktopController;
 use virtual_desktops::VirtualDesktopMessage;
+use wayapp::get_init_app;
 
 const DEFAULT_DATABASE: &str = "~/.config/timings/timings.db";
 const ICON_GREEN: &[u8] = include_bytes!("../resources/green.ico");
@@ -64,7 +68,7 @@ enum AppMessage {
     AnotherInstanceTriedToStart,
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main()]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("timings_app=info,timings=trace"),
@@ -120,68 +124,86 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_keepalive_thread(appmsg_sender.clone());
     spawn_virtual_desktop_listener(desktop_controller.clone(), appmsg_sender.clone());
 
+    let mut app = get_init_app();
+    let project_timings_gui = init_project_timings_gui(&mut app);
+    let mut event_queue = app.event_queue.take().unwrap();
     loop {
-        match appmsgs.recv().await {
-            Some(AppMessage::Exit) => {
-                break Ok(());
-            }
-            Some(AppMessage::WriteTimings) => {
-                if let Err(e) = vd_timings_recorder.write_timings().await {
-                    log::error!("Failed to write timings: {}", e);
+        select! {
+            // Wait for Wayland events in a blocking task, then dispatch them
+            _ = tokio::task::spawn_blocking({
+                let conn = app.conn.clone();
+                move || {
+                    if let Some(guard) = conn.prepare_read() {
+                        guard.read_without_dispatch().unwrap();
+                    }
                 }
+            }) => {
+                println!("[ASYNC MAIN] ✓ Dispatched Wayland events on thread {:?}", std::thread::current().id());
+                let _ = event_queue.dispatch_pending(app);
             }
-            Some(AppMessage::KeepAlive) => {
-                log::trace!("Keep alive timing");
-                vd_timings_recorder.keep_alive();
-            }
-            Some(AppMessage::ShowDailyTotals) => {
-                if let Err(e) = vd_timings_recorder.show_daily_totals().await {
-                    log::error!("Failed to show daily totals: {}", e);
+
+            // Other app events
+            Some(event) = appmsgs.recv() => {
+                match event {
+                    AppMessage::Exit => {
+                        break Ok(());
+                    }
+                    AppMessage::WriteTimings => {
+                        if let Err(e) = vd_timings_recorder.write_timings().await {
+                            log::error!("Failed to write timings: {}", e);
+                        }
+                    }
+                    AppMessage::KeepAlive => {
+                        log::trace!("Keep alive timing");
+                        vd_timings_recorder.keep_alive();
+                    }
+                    AppMessage::ShowDailyTotals => {
+                        if let Err(e) = vd_timings_recorder.show_daily_totals().await {
+                            log::error!("Failed to show daily totals: {}", e);
+                        }
+                    }
+                    AppMessage::VirtualDesktop(vd_msg) => match vd_msg {
+                        VirtualDesktopMessage::DesktopNameChanged(_id, name) => {
+                            vd_timings_recorder.start_timing_from_desktop_name(&name);
+                            let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
+                        }
+                        VirtualDesktopMessage::DesktopChange(id) => {
+                            let name = desktop_controller
+                                .get_desktop_name(&id)
+                                .await
+                                .unwrap_or_else(|_| "Unknown".to_string());
+                            vd_timings_recorder.start_timing_from_desktop_name(&name);
+                            let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
+                        }
+                    },
+                    AppMessage::UserIdled => {
+                        log::trace!("User activity changed to idling");
+                        vd_timings_recorder.stop_timing();
+                    }
+                    AppMessage::UserResumed => {
+                        log::trace!("User activity changed to resumed");
+                        vd_timings_recorder.resume_timing();
+                    }
+                    AppMessage::VirtualDesktopThreadExited => {
+                        log::warn!(
+                            "Virtual desktop listener thread has exited, this happens if the D-Bus \
+                            connection is lost for instance when user closes the desktop but not the \
+                            application."
+                        );
+                        break Err("Virtual desktop listener thread has exited".into());
+                    }
+                    AppMessage::StartedTiming(client, project) => {
+                        log::trace!("Started timing: client='{}', project='{}'", client, project);
+                        let _ = tray_icon.set_icon(&green_icon);
+                    }
+                    AppMessage::StoppedTiming => {
+                        log::trace!("Stopped timing");
+                        let _ = tray_icon.set_icon(&red_icon);
+                    }
+                    AppMessage::AnotherInstanceTriedToStart => {
+                        log::info!("Another instance tried to start");
+                    }
                 }
-            }
-            Some(AppMessage::VirtualDesktop(vd_msg)) => match vd_msg {
-                VirtualDesktopMessage::DesktopNameChanged(_id, name) => {
-                    vd_timings_recorder.start_timing_from_desktop_name(&name);
-                    let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
-                }
-                VirtualDesktopMessage::DesktopChange(id) => {
-                    let name = desktop_controller
-                        .get_desktop_name(&id)
-                        .await
-                        .unwrap_or_else(|_| "Unknown".to_string());
-                    vd_timings_recorder.start_timing_from_desktop_name(&name);
-                    let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
-                }
-            },
-            Some(AppMessage::UserIdled) => {
-                log::trace!("User activity changed to idling");
-                vd_timings_recorder.stop_timing();
-            }
-            Some(AppMessage::UserResumed) => {
-                log::trace!("User activity changed to resumed");
-                vd_timings_recorder.resume_timing();
-            }
-            Some(AppMessage::VirtualDesktopThreadExited) => {
-                log::warn!(
-                    "Virtual desktop listener thread has exited, this happens if the D-Bus \
-                     connection is lost for instance when user closes the desktop but not the \
-                     application."
-                );
-                break Err("Virtual desktop listener thread has exited".into());
-            }
-            Some(AppMessage::StartedTiming(client, project)) => {
-                log::trace!("Started timing: client='{}', project='{}'", client, project);
-                let _ = tray_icon.set_icon(&green_icon);
-            }
-            Some(AppMessage::StoppedTiming) => {
-                log::trace!("Stopped timing");
-                let _ = tray_icon.set_icon(&red_icon);
-            }
-            Some(AppMessage::AnotherInstanceTriedToStart) => {
-                log::info!("Another instance tried to start");
-            }
-            None => {
-                break Ok(());
             }
         }
     }
