@@ -3,6 +3,7 @@ use clap::Parser;
 use futures::StreamExt;
 use idle_monitor::run_idle_monitor;
 use log::trace;
+use single_instance::only_single_instance;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 use std::path::PathBuf;
@@ -60,6 +61,130 @@ enum AppMessage {
     StoppedTiming,
     UserIdled,
     UserResumed,
+    AnotherInstanceTriedToStart,
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("timings_app=info,timings=trace"),
+    )
+    .init();
+    let cli = Cli::parse();
+    let database_path = handle_database_path(&cli.database).await?;
+    let (appmsg_sender, mut appmsgs) = tokio::sync::mpsc::unbounded_channel::<AppMessage>();
+
+    // Ensure only a single instance is running for this database path
+    let sender_for_single_instance = appmsg_sender.clone();
+    only_single_instance(&database_path, move || {
+        let _ = sender_for_single_instance.send(AppMessage::AnotherInstanceTriedToStart);
+    })?;
+
+    // Start the virtual desktop timings recorder
+    let mut vd_timings_recorder = VirtualDesktopTimingsRecorder::new(
+        &database_path,
+        Duration::seconds(cli.minimum_timing as i64),
+        appmsg_sender.clone(),
+    )
+    .await?;
+
+    let desktop_controller = KDEVirtualDesktopController::new().await?;
+    let current_desktop = desktop_controller.get_current_desktop().await?;
+    let current_desktop_name = desktop_controller
+        .get_desktop_name(&current_desktop)
+        .await
+        .unwrap_or_else(|_| "Unknown".to_string());
+
+    // Initialize timing for the current desktop
+    vd_timings_recorder.start_timing_from_desktop_name(&current_desktop_name);
+
+    let tray_icon_sender = appmsg_sender.clone();
+    let green_icon = Icon::from_buffer(ICON_GREEN, None, None)?;
+    let red_icon = Icon::from_buffer(ICON_RED, None, None)?;
+    let mut tray_icon = TrayIconBuilder::new()
+        .sender(move |m: &AppMessage| {
+            let _ = tray_icon_sender.send(m.clone());
+        })
+        .icon(green_icon.clone())
+        .tooltip(format!("Timings: {}", current_desktop_name).as_str())
+        .menu(
+            MenuBuilder::new()
+                .item("Show daily totals", AppMessage::ShowDailyTotals)
+                .item("Exit", AppMessage::Exit),
+        )
+        .build()?;
+
+    spawn_idle_monitor_thread(appmsg_sender.clone(), cli.idle_timeout);
+    spawn_stdin_reader(appmsg_sender.clone());
+    spawn_write_timings_thread(appmsg_sender.clone());
+    spawn_keepalive_thread(appmsg_sender.clone());
+    spawn_virtual_desktop_listener(desktop_controller.clone(), appmsg_sender.clone());
+
+    loop {
+        match appmsgs.recv().await {
+            Some(AppMessage::Exit) => {
+                break Ok(());
+            }
+            Some(AppMessage::WriteTimings) => {
+                if let Err(e) = vd_timings_recorder.write_timings().await {
+                    log::error!("Failed to write timings: {}", e);
+                }
+            }
+            Some(AppMessage::KeepAlive) => {
+                log::trace!("Keep alive timing");
+                vd_timings_recorder.keep_alive();
+            }
+            Some(AppMessage::ShowDailyTotals) => {
+                if let Err(e) = vd_timings_recorder.show_daily_totals().await {
+                    log::error!("Failed to show daily totals: {}", e);
+                }
+            }
+            Some(AppMessage::VirtualDesktop(vd_msg)) => match vd_msg {
+                VirtualDesktopMessage::DesktopNameChanged(_id, name) => {
+                    vd_timings_recorder.start_timing_from_desktop_name(&name);
+                    let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
+                }
+                VirtualDesktopMessage::DesktopChange(id) => {
+                    let name = desktop_controller
+                        .get_desktop_name(&id)
+                        .await
+                        .unwrap_or_else(|_| "Unknown".to_string());
+                    vd_timings_recorder.start_timing_from_desktop_name(&name);
+                    let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
+                }
+            },
+            Some(AppMessage::UserIdled) => {
+                log::trace!("User activity changed to idling");
+                vd_timings_recorder.stop_timing();
+            }
+            Some(AppMessage::UserResumed) => {
+                log::trace!("User activity changed to resumed");
+                vd_timings_recorder.resume_timing();
+            }
+            Some(AppMessage::VirtualDesktopThreadExited) => {
+                log::warn!(
+                    "Virtual desktop listener thread has exited, this happens if the D-Bus \
+                     connection is lost for instance when user closes the desktop but not the \
+                     application."
+                );
+                break Err("Virtual desktop listener thread has exited".into());
+            }
+            Some(AppMessage::StartedTiming(client, project)) => {
+                log::trace!("Started timing: client='{}', project='{}'", client, project);
+                let _ = tray_icon.set_icon(&green_icon);
+            }
+            Some(AppMessage::StoppedTiming) => {
+                log::trace!("Stopped timing");
+                let _ = tray_icon.set_icon(&red_icon);
+            }
+            Some(AppMessage::AnotherInstanceTriedToStart) => {
+                log::info!("Another instance tried to start");
+            }
+            None => {
+                break Ok(());
+            }
+        }
+    }
 }
 
 struct VirtualDesktopTimingsRecorder {
@@ -223,7 +348,15 @@ impl VirtualDesktopTimingsRecorder {
 
 /// Expands ~ to the home directory and ensures parent directories exist (only
 /// for DEFAULT_DATABASE)
-async fn expand_path(path: &str) -> Result<String, Box<dyn std::error::Error>> {
+///
+/// Canonicalizes the path to absolute path.
+async fn handle_database_path(path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    if path.starts_with(":") || path == "sqlite::memory:" {
+        // Special SQLite in-memory or URI path, return as is
+        return Ok(path.to_string());
+    }
+
+    // Expand ~ to home directory
     let expanded = if path.starts_with("~") {
         if let Some(home) = std::env::var_os("HOME") {
             PathBuf::from(home).join(path.strip_prefix("~/").unwrap_or(&path[1..]))
@@ -246,122 +379,10 @@ async fn expand_path(path: &str) -> Result<String, Box<dyn std::error::Error>> {
         }
     }
 
+    // Expand path to absolute (std)
+    let expanded = expanded.canonicalize()?;
+
     Ok(expanded.to_string_lossy().to_string())
-}
-
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("timings_app=info,timings=trace"),
-    )
-    .init();
-    let cli = Cli::parse();
-
-    let database_path = expand_path(&cli.database).await?;
-
-    let (appmsg_sender, mut appmsgs) = tokio::sync::mpsc::unbounded_channel::<AppMessage>();
-
-    let mut vd_timings_recorder = VirtualDesktopTimingsRecorder::new(
-        &database_path,
-        Duration::seconds(cli.minimum_timing as i64),
-        appmsg_sender.clone(),
-    )
-    .await?;
-
-    let desktop_controller = KDEVirtualDesktopController::new().await?;
-    let current_desktop = desktop_controller.get_current_desktop().await?;
-    let current_desktop_name = desktop_controller
-        .get_desktop_name(&current_desktop)
-        .await
-        .unwrap_or_else(|_| "Unknown".to_string());
-
-    // Initialize timing for the current desktop
-    vd_timings_recorder.start_timing_from_desktop_name(&current_desktop_name);
-
-    let tray_icon_sender = appmsg_sender.clone();
-    let green_icon = Icon::from_buffer(ICON_GREEN, None, None)?;
-    let red_icon = Icon::from_buffer(ICON_RED, None, None)?;
-    let mut tray_icon = TrayIconBuilder::new()
-        .sender(move |m: &AppMessage| {
-            let _ = tray_icon_sender.send(m.clone());
-        })
-        .icon(green_icon.clone())
-        .tooltip(format!("Timings: {}", current_desktop_name).as_str())
-        .menu(
-            MenuBuilder::new()
-                .item("Show daily totals", AppMessage::ShowDailyTotals)
-                .item("Exit", AppMessage::Exit),
-        )
-        .build()?;
-
-    spawn_idle_monitor_thread(appmsg_sender.clone(), cli.idle_timeout);
-    spawn_stdin_reader(appmsg_sender.clone());
-    spawn_write_timings_thread(appmsg_sender.clone());
-    spawn_keepalive_thread(appmsg_sender.clone());
-    spawn_virtual_desktop_listener(desktop_controller.clone(), appmsg_sender.clone());
-
-    loop {
-        match appmsgs.recv().await {
-            Some(AppMessage::Exit) => {
-                break Ok(());
-            }
-            Some(AppMessage::WriteTimings) => {
-                if let Err(e) = vd_timings_recorder.write_timings().await {
-                    log::error!("Failed to write timings: {}", e);
-                }
-            }
-            Some(AppMessage::KeepAlive) => {
-                log::trace!("Keep alive timing");
-                vd_timings_recorder.keep_alive();
-            }
-            Some(AppMessage::ShowDailyTotals) => {
-                if let Err(e) = vd_timings_recorder.show_daily_totals().await {
-                    log::error!("Failed to show daily totals: {}", e);
-                }
-            }
-            Some(AppMessage::VirtualDesktop(vd_msg)) => match vd_msg {
-                VirtualDesktopMessage::DesktopNameChanged(_id, name) => {
-                    vd_timings_recorder.start_timing_from_desktop_name(&name);
-                    let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
-                }
-                VirtualDesktopMessage::DesktopChange(id) => {
-                    let name = desktop_controller
-                        .get_desktop_name(&id)
-                        .await
-                        .unwrap_or_else(|_| "Unknown".to_string());
-                    vd_timings_recorder.start_timing_from_desktop_name(&name);
-                    let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
-                }
-            },
-            Some(AppMessage::UserIdled) => {
-                log::trace!("User activity changed to idling");
-                vd_timings_recorder.stop_timing();
-            }
-            Some(AppMessage::UserResumed) => {
-                log::trace!("User activity changed to resumed");
-                vd_timings_recorder.resume_timing();
-            }
-            Some(AppMessage::VirtualDesktopThreadExited) => {
-                log::warn!(
-                    "Virtual desktop listener thread has exited, this happens if the D-Bus \
-                     connection is lost for instance when user closes the desktop but not the \
-                     application."
-                );
-                break Err("Virtual desktop listener thread has exited".into());
-            }
-            Some(AppMessage::StartedTiming(client, project)) => {
-                log::trace!("Started timing: client='{}', project='{}'", client, project);
-                let _ = tray_icon.set_icon(&green_icon);
-            }
-            Some(AppMessage::StoppedTiming) => {
-                log::trace!("Stopped timing");
-                let _ = tray_icon.set_icon(&red_icon);
-            }
-            None => {
-                break Ok(());
-            }
-        }
-    }
 }
 
 /// Spawns a task that listens to virtual desktop messages and forwards them to

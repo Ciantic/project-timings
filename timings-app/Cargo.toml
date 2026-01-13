@@ -10,6 +10,7 @@ trayicon = { git = "https://github.com/Ciantic/trayicon-rs", branch = "master" }
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 clap = { version = "4.5", features = ["derive"] }
 
+single-instance = { path = "../single-instance" }
 virtual-desktops = { path = "../virtual-desktops" }
 idle-monitor = { path = "../idle-monitor" }
 timings = { path = "../timings" }
