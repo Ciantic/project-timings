@@ -119,10 +119,7 @@ impl ProjectTimingsGui {
     }
 }
 
-pub fn make_layer_surface(
-    app: &mut Application,
-    current_desktop_name: String,
-) -> EguiSurfaceState<LayerSurface> {
+pub fn make_layer_surface(app: &mut Application) -> EguiSurfaceState<LayerSurface> {
     let layer_surface = app.layer_shell.create_layer_surface(
         &app.qh,
         app.compositor_state.create_surface(&app.qh),

@@ -199,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                             // Show the overlay if not already shown
                             if let None = &mut timings_app_surface {
-                                timings_app_surface = Some(make_layer_surface(&mut app, name));
+                                timings_app_surface = Some(make_layer_surface(&mut app));
                                 hide_overlay_after_delay(appmsg_sender.clone(), 3);
                             }
                         }
