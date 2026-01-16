@@ -1,25 +1,43 @@
 use egui::CentralPanel;
 use egui::Context;
+use smithay_client_toolkit::reexports::client::Connection;
+use smithay_client_toolkit::reexports::client::QueueHandle;
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::Anchor;
 use smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity;
 use smithay_client_toolkit::shell::wlr_layer::Layer;
+use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
 use std::cell::RefCell;
 use std::rc::Rc;
+use virtual_desktops::KDEVirtualDesktopController;
+use virtual_desktops::VirtualDesktopController;
 use wayapp::Application;
 use wayapp::EguiAppData;
-use wayapp::EguiLayerSurface;
+use wayapp::RequestFrame;
 
 pub struct ProjectTimingsGui {
-    counter: i32,
-    text: String,
+    connection: Connection,
+    queue_handle: QueueHandle<Application>,
+    client: String,
+    project: String,
+    desktop_controller: KDEVirtualDesktopController,
+    layer_surface: LayerSurface,
 }
 
-impl Default for ProjectTimingsGui {
-    fn default() -> Self {
+impl ProjectTimingsGui {
+    pub fn new(
+        connection: &Connection,
+        queue_handle: &QueueHandle<Application>,
+        layer_surface: &LayerSurface,
+        desktop_controller: &KDEVirtualDesktopController,
+    ) -> Self {
         Self {
-            counter: 0,
-            text: "Hello from EGUI!".into(),
+            connection: connection.clone(),
+            queue_handle: queue_handle.clone(),
+            client: String::new(),
+            project: String::new(),
+            desktop_controller: desktop_controller.clone(),
+            layer_surface: layer_surface.clone(),
         }
     }
 }
@@ -27,52 +45,80 @@ impl Default for ProjectTimingsGui {
 impl EguiAppData for ProjectTimingsGui {
     fn ui(&mut self, ctx: &Context) {
         CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Egui WGPU / Smithay - Async Multi-Source");
-
-            ui.separator();
-
-            ui.label(format!("Counter: {}", self.counter));
-            if ui.button("Increment").clicked() {
-                self.counter += 1;
-            }
-            if ui.button("Decrement").clicked() {
-                self.counter -= 1;
-            }
+            ui.heading("Project Timings");
 
             ui.separator();
 
             ui.horizontal(|ui| {
-                ui.label("Text input:");
-                ui.text_edit_singleline(&mut self.text);
+                ui.label("Client:");
+                ui.text_edit_singleline(&mut self.client);
             });
 
-            ui.label(format!("You wrote: {}", self.text));
+            ui.horizontal(|ui| {
+                ui.label("Project:");
+                ui.text_edit_singleline(&mut self.project);
+            });
 
             ui.separator();
 
-            ui.label("This demonstrates async multi-source event handling!");
+            if ui.button("Update Desktop Name").clicked() {
+                self.update_desktop_name();
+            }
         });
     }
 }
 
-pub fn init_project_timings_gui(app: &mut Application) -> Rc<RefCell<ProjectTimingsGui>> {
-    let shared_surface = app.compositor_state.create_surface(&app.qh);
-    let layer_surface = app.layer_shell.create_layer_surface(
-        &app.qh,
-        shared_surface.clone(),
-        Layer::Top,
-        Some("AsyncExample"),
-        None,
-    );
-    layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
-    layer_surface.set_anchor(Anchor::BOTTOM);
-    layer_surface.set_margin(0, 0, 20, 20);
-    layer_surface.set_size(256, 256);
-    layer_surface.commit();
+impl ProjectTimingsGui {
+    /// Updates the client and project fields from a desktop name
+    pub fn update_from_desktop_name(&mut self, desktop_name: &str) {
+        let (client, project) = Self::parse_desktop_name(desktop_name);
+        self.client = client.unwrap_or_default();
+        self.project = project.unwrap_or_default();
+        log::info!(
+            "Updated overlay: client='{}', project='{}'",
+            self.client,
+            self.project
+        );
+        self.layer_surface.request_frame(&self.queue_handle);
+        self.connection.flush().unwrap();
+    }
 
-    let project_timings_gui = Rc::new(RefCell::new(ProjectTimingsGui::default()));
-    let egui_layer_surface =
-        EguiLayerSurface::new(layer_surface, project_timings_gui.clone(), 256, 256);
-    app.push_layer_surface(egui_layer_surface);
-    project_timings_gui
+    fn update_desktop_name(&mut self) {
+        if self.client.is_empty() || self.project.is_empty() {
+            log::warn!("Client or Project is empty, not updating desktop name");
+            return;
+        }
+
+        let desktop_name = format!("{}: {}", self.client, self.project);
+        log::info!("Updating desktop name to: {}", desktop_name);
+        if let Err(e) =
+            futures::executor::block_on(self.desktop_controller.update_desktop_name(&desktop_name))
+        {
+            log::error!("Failed to update desktop name: {}", e);
+        }
+
+        // let mut controller = self.desktop_controller.clone();
+        // tokio::spawn(async move {
+        //     if let Err(e) =
+        // controller.update_desktop_name(&desktop_name).await {
+        //         log::error!("Failed to update desktop name: {}", e);
+        //     } else {
+        //         log::info!("Successfully updated desktop name");
+        //     }
+        // });
+    }
+
+    /// Parses a desktop name into client and project.
+    /// Format: "client: project" or just "client"
+    fn parse_desktop_name(desktop_name: &str) -> (Option<String>, Option<String>) {
+        let parts: Vec<&str> = desktop_name.splitn(2, ':').collect();
+        if parts.len() == 2 {
+            (
+                Some(parts[0].trim().to_string()),
+                Some(parts[1].trim().to_string()),
+            )
+        } else {
+            (Some(desktop_name.trim().to_string()), None)
+        }
+    }
 }

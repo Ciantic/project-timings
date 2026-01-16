@@ -1,11 +1,15 @@
 mod overlay;
-use crate::overlay::init_project_timings_gui;
+use crate::overlay::ProjectTimingsGui;
 use chrono::Duration;
 use clap::Parser;
 use futures::StreamExt;
 use idle_monitor::run_idle_monitor;
 use log::trace;
 use single_instance::only_single_instance;
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shell::wlr_layer::Anchor;
+use smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity;
+use smithay_client_toolkit::shell::wlr_layer::Layer;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 use std::path::PathBuf;
@@ -21,7 +25,8 @@ use trayicon::TrayIconBuilder;
 use virtual_desktops::KDEVirtualDesktopController;
 use virtual_desktops::VirtualDesktopController;
 use virtual_desktops::VirtualDesktopMessage;
-use wayapp::get_init_app;
+use wayapp::Application;
+use wayapp::EguiSurfaceState;
 
 const DEFAULT_DATABASE: &str = "~/.config/timings/timings.db";
 const ICON_GREEN: &[u8] = include_bytes!("../resources/green.ico");
@@ -53,7 +58,7 @@ struct Cli {
     idle_timeout: u64,
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 enum AppMessage {
     Exit,
     WriteTimings,
@@ -71,9 +76,11 @@ enum AppMessage {
 #[tokio::main()]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("timings_app=info,timings=trace"),
+        env_logger::Env::default()
+            .default_filter_or("timings_app=trace,timings=trace,wayapp=trace"),
     )
     .init();
+    let mut app = Application::new();
     let cli = Cli::parse();
     let database_path = handle_database_path(&cli.database).await?;
     let (appmsg_sender, mut appmsgs) = tokio::sync::mpsc::unbounded_channel::<AppMessage>();
@@ -124,8 +131,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_keepalive_thread(appmsg_sender.clone());
     spawn_virtual_desktop_listener(desktop_controller.clone(), appmsg_sender.clone());
 
-    let mut app = get_init_app();
-    let project_timings_gui = init_project_timings_gui(&mut app);
+    let layer_surface = app.layer_shell.create_layer_surface(
+        &app.qh,
+        app.compositor_state.create_surface(&app.qh),
+        Layer::Top,
+        Some("ProjectTimings"),
+        None,
+    );
+    layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+    layer_surface.set_anchor(Anchor::RIGHT);
+    layer_surface.set_margin(0, 0, 20, 20);
+    layer_surface.set_size(320, 160);
+    layer_surface.commit();
+    let mut timings_app_surface = EguiSurfaceState::new(&app, &layer_surface);
+    let mut project_timings_gui =
+        ProjectTimingsGui::new(&app.conn, &app.qh, &layer_surface, &desktop_controller);
+    project_timings_gui.update_from_desktop_name(&current_desktop_name);
+
     let mut event_queue = app.event_queue.take().unwrap();
     loop {
         select! {
@@ -138,12 +160,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }) => {
-                println!("[ASYNC MAIN] ✓ Dispatched Wayland events on thread {:?}", std::thread::current().id());
-                let _ = event_queue.dispatch_pending(app);
+                let _ = event_queue.dispatch_pending(&mut app);
+                let events = app.take_wayland_events();
+                // trace!("[ASYNC MAIN] ✓ Dispatched Wayland events {} on thread {:?}", events.len(), std::thread::current().id());
+                timings_app_surface.handle_events(&mut app, &events, &mut project_timings_gui);
             }
 
             // Other app events
             Some(event) = appmsgs.recv() => {
+                trace!("[ASYNC MAIN] ✓ Received AppMessage::{:?} on thread {:?}", event, std::thread::current().id());
                 match event {
                     AppMessage::Exit => {
                         break Ok(());
@@ -166,6 +191,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         VirtualDesktopMessage::DesktopNameChanged(_id, name) => {
                             vd_timings_recorder.start_timing_from_desktop_name(&name);
                             let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
+                            project_timings_gui.update_from_desktop_name(&name);
                         }
                         VirtualDesktopMessage::DesktopChange(id) => {
                             let name = desktop_controller
@@ -174,6 +200,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .unwrap_or_else(|_| "Unknown".to_string());
                             vd_timings_recorder.start_timing_from_desktop_name(&name);
                             let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
+                            project_timings_gui.update_from_desktop_name(&name);
                         }
                     },
                     AppMessage::UserIdled => {
