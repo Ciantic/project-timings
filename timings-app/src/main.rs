@@ -1,5 +1,6 @@
 mod overlay;
 use crate::overlay::ProjectTimingsGui;
+use crate::overlay::make_layer_surface;
 use chrono::Duration;
 use clap::Parser;
 use futures::StreamExt;
@@ -10,6 +11,7 @@ use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::Anchor;
 use smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity;
 use smithay_client_toolkit::shell::wlr_layer::Layer;
+use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 use std::path::PathBuf;
@@ -67,19 +69,23 @@ enum AppMessage {
     VirtualDesktop(VirtualDesktopMessage),
     VirtualDesktopThreadExited,
     StartedTiming(String, String),
+    HideLayerOverlay,
     StoppedTiming,
     UserIdled,
     UserResumed,
     AnotherInstanceTriedToStart,
+    RequestRender,
 }
 
-#[tokio::main()]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(debug_assertions)]
     env_logger::Builder::from_env(
         env_logger::Env::default()
             .default_filter_or("timings_app=trace,timings=trace,wayapp=trace"),
     )
     .init();
+
     let mut app = Application::new();
     let cli = Cli::parse();
     let database_path = handle_database_path(&cli.database).await?;
@@ -131,22 +137,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_keepalive_thread(appmsg_sender.clone());
     spawn_virtual_desktop_listener(desktop_controller.clone(), appmsg_sender.clone());
 
-    let layer_surface = app.layer_shell.create_layer_surface(
-        &app.qh,
-        app.compositor_state.create_surface(&app.qh),
-        Layer::Top,
-        Some("ProjectTimings"),
-        None,
-    );
-    layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
-    layer_surface.set_anchor(Anchor::RIGHT);
-    layer_surface.set_margin(0, 0, 20, 20);
-    layer_surface.set_size(320, 160);
-    layer_surface.commit();
-    let mut timings_app_surface = EguiSurfaceState::new(&app, &layer_surface);
     let mut project_timings_gui =
-        ProjectTimingsGui::new(&app.conn, &app.qh, &layer_surface, &desktop_controller);
-    project_timings_gui.update_from_desktop_name(&current_desktop_name);
+        ProjectTimingsGui::new(appmsg_sender.clone(), &desktop_controller);
+    let mut timings_app_surface: Option<EguiSurfaceState<LayerSurface>> = None;
 
     let mut event_queue = app.event_queue.take().unwrap();
     loop {
@@ -163,7 +156,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = event_queue.dispatch_pending(&mut app);
                 let events = app.take_wayland_events();
                 // trace!("[ASYNC MAIN] ✓ Dispatched Wayland events {} on thread {:?}", events.len(), std::thread::current().id());
-                timings_app_surface.handle_events(&mut app, &events, &mut project_timings_gui);
+                if let Some(timings_app_surface) = &mut timings_app_surface {
+                    timings_app_surface.handle_events(&mut app, &events, &mut project_timings_gui);
+                }
             }
 
             // Other app events
@@ -201,6 +196,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             vd_timings_recorder.start_timing_from_desktop_name(&name);
                             let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
                             project_timings_gui.update_from_desktop_name(&name);
+
+                            // Show the overlay if not already shown
+                            if let None = &mut timings_app_surface {
+                                timings_app_surface = Some(make_layer_surface(&mut app, name));
+                                hide_overlay_after_delay(appmsg_sender.clone(), 3);
+                            }
                         }
                     },
                     AppMessage::UserIdled => {
@@ -229,6 +230,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     AppMessage::AnotherInstanceTriedToStart => {
                         log::info!("Another instance tried to start");
+                    }
+                    AppMessage::RequestRender => {
+                        if let Some(timings_app_surface) = &mut timings_app_surface {
+                            timings_app_surface.request_frame();
+                            let _ = app.conn.flush();
+                        }
+                    },
+                    AppMessage::HideLayerOverlay => {
+                        timings_app_surface.take();
                     }
                 }
             }
@@ -550,5 +560,15 @@ fn spawn_idle_monitor_thread(
                 log::error!("Idle monitor thread panic");
             }
         }
+    });
+}
+
+fn hide_overlay_after_delay(
+    sender: tokio::sync::mpsc::UnboundedSender<AppMessage>,
+    delay_secs: u64,
+) {
+    thread::spawn(move || {
+        thread::sleep(std::time::Duration::from_secs(delay_secs));
+        let _ = sender.send(AppMessage::HideLayerOverlay);
     });
 }

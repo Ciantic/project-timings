@@ -1,3 +1,4 @@
+use crate::AppMessage;
 use egui::CentralPanel;
 use egui::Context;
 use smithay_client_toolkit::reexports::client::Connection;
@@ -9,35 +10,31 @@ use smithay_client_toolkit::shell::wlr_layer::Layer;
 use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
 use std::cell::RefCell;
 use std::rc::Rc;
+use tokio::sync::mpsc::UnboundedSender;
 use virtual_desktops::KDEVirtualDesktopController;
 use virtual_desktops::VirtualDesktopController;
 use wayapp::Application;
 use wayapp::EguiAppData;
+use wayapp::EguiSurfaceState;
 use wayapp::RequestFrame;
 
 pub struct ProjectTimingsGui {
-    connection: Connection,
-    queue_handle: QueueHandle<Application>,
+    sender: UnboundedSender<AppMessage>,
     client: String,
     project: String,
     desktop_controller: KDEVirtualDesktopController,
-    layer_surface: LayerSurface,
 }
 
 impl ProjectTimingsGui {
     pub fn new(
-        connection: &Connection,
-        queue_handle: &QueueHandle<Application>,
-        layer_surface: &LayerSurface,
+        sender: UnboundedSender<AppMessage>,
         desktop_controller: &KDEVirtualDesktopController,
     ) -> Self {
         Self {
-            connection: connection.clone(),
-            queue_handle: queue_handle.clone(),
+            sender,
             client: String::new(),
             project: String::new(),
             desktop_controller: desktop_controller.clone(),
-            layer_surface: layer_surface.clone(),
         }
     }
 }
@@ -79,8 +76,7 @@ impl ProjectTimingsGui {
             self.client,
             self.project
         );
-        self.layer_surface.request_frame(&self.queue_handle);
-        self.connection.flush().unwrap();
+        self.sender.send(AppMessage::RequestRender).unwrap();
     }
 
     fn update_desktop_name(&mut self) {
@@ -121,4 +117,23 @@ impl ProjectTimingsGui {
             (Some(desktop_name.trim().to_string()), None)
         }
     }
+}
+
+pub fn make_layer_surface(
+    app: &mut Application,
+    current_desktop_name: String,
+) -> EguiSurfaceState<LayerSurface> {
+    let layer_surface = app.layer_shell.create_layer_surface(
+        &app.qh,
+        app.compositor_state.create_surface(&app.qh),
+        Layer::Top,
+        Some("ProjectTimings"),
+        None,
+    );
+    layer_surface.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+    layer_surface.set_anchor(Anchor::BOTTOM);
+    layer_surface.set_margin(0, 0, 20, 20);
+    layer_surface.set_size(320, 160);
+    layer_surface.commit();
+    EguiSurfaceState::new(&app, layer_surface, 320, 160)
 }

@@ -9,7 +9,7 @@ version = "0.0.1"
 trayicon = { git = "https://github.com/Ciantic/trayicon-rs", branch = "master" }
 smithay-client-toolkit = "0.20.0"
 egui = "0.33.3"
-wayapp = { git = "https://github.com/Ciantic/wayapp", branch = "event-thread-struct" }
+wayapp = { git = "https://github.com/Ciantic/wayapp", branch = "main" }
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 clap = { version = "4.5", features = ["derive"] }
 
