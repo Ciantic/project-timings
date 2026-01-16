@@ -7,15 +7,12 @@ use futures::StreamExt;
 use idle_monitor::run_idle_monitor;
 use log::trace;
 use single_instance::only_single_instance;
-use smithay_client_toolkit::shell::WaylandSurface;
-use smithay_client_toolkit::shell::wlr_layer::Anchor;
-use smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity;
-use smithay_client_toolkit::shell::wlr_layer::Layer;
 use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Mutex;
 use std::thread;
 use timings::TimingsMutations;
 use timings::TimingsRecording;
@@ -200,8 +197,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // Show the overlay if not already shown
                             if let None = &mut timings_app_surface {
                                 timings_app_surface = Some(make_layer_surface(&mut app));
-                                hide_overlay_after_delay(appmsg_sender.clone(), 3);
                             }
+                            hide_overlay_after_delay(appmsg_sender.clone(), 3);
                         }
                     },
                     AppMessage::UserIdled => {
@@ -563,12 +560,22 @@ fn spawn_idle_monitor_thread(
     });
 }
 
+static HIDE_OVERLAY_TASK: Mutex<Option<tokio::task::JoinHandle<()>>> = Mutex::new(None);
+
 fn hide_overlay_after_delay(
     sender: tokio::sync::mpsc::UnboundedSender<AppMessage>,
     delay_secs: u64,
 ) {
-    thread::spawn(move || {
-        thread::sleep(std::time::Duration::from_secs(delay_secs));
+    let mut task = HIDE_OVERLAY_TASK.lock().unwrap();
+
+    // Cancel existing task if any
+    if let Some(handle) = task.take() {
+        handle.abort();
+    }
+
+    // Start new task
+    *task = Some(tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
         let _ = sender.send(AppMessage::HideLayerOverlay);
-    });
+    }));
 }
