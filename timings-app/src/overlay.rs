@@ -12,6 +12,7 @@ use virtual_desktops::VirtualDesktopController;
 use wayapp::Application;
 use wayapp::EguiAppData;
 use wayapp::EguiSurfaceState;
+use wayapp::WaylandEvent;
 
 pub struct ProjectTimingsGui {
     sender: UnboundedSender<AppMessage>,
@@ -20,6 +21,7 @@ pub struct ProjectTimingsGui {
     desktop_controller: KDEVirtualDesktopController,
     has_keyboard_focus: bool,
     central_panel_has_focus: bool,
+    egui_surface_state: Option<EguiSurfaceState<LayerSurface>>,
 }
 
 impl ProjectTimingsGui {
@@ -34,6 +36,36 @@ impl ProjectTimingsGui {
             desktop_controller: desktop_controller.clone(),
             has_keyboard_focus: false,
             central_panel_has_focus: false,
+            egui_surface_state: None,
+        }
+    }
+
+    pub fn show(&mut self, app: &mut Application) {
+        if self.egui_surface_state.is_some() {
+            return;
+        }
+        self.egui_surface_state = Some(make_layer_surface(app));
+    }
+
+    pub fn hide(&mut self) {
+        if self.has_keyboard_focus {
+            log::info!("Not hiding overlay, has keyboard focus");
+            return;
+        }
+        self.egui_surface_state = None;
+    }
+
+    pub fn handle_events(&mut self, app: &mut Application, events: &[WaylandEvent]) {
+        if let Some(mut surface_state) = self.egui_surface_state.take() {
+            surface_state.handle_events(app, events, self);
+            self.egui_surface_state = Some(surface_state);
+        }
+    }
+
+    pub fn request_frame(&mut self, app: &mut Application) {
+        if let Some(surface_state) = &mut self.egui_surface_state {
+            surface_state.request_frame();
+            let _ = app.conn.flush();
         }
     }
 }

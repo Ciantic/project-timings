@@ -139,7 +139,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut project_timings_gui =
         ProjectTimingsGui::new(appmsg_sender.clone(), &desktop_controller);
-    let mut timings_app_surface: Option<EguiSurfaceState<LayerSurface>> = None;
 
     let mut event_queue = app.event_queue.take().unwrap();
     loop {
@@ -156,25 +155,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = event_queue.dispatch_pending(&mut app);
                 let events = app.take_wayland_events();
                 // trace!("[ASYNC MAIN] ✓ Dispatched Wayland events {} on thread {:?}", events.len(), std::thread::current().id());
-                if let Some(timings_app_surface) = &mut timings_app_surface {
-                    for event in &events {
-                        match event {
-                            WaylandEvent::KeyboardEnter(surface, ..) => {
-                                if &surface == &timings_app_surface.wl_surface() {
-                                    // project_timings_gui.has_keyboard_focus = true;
-                                }
-                            },
-                            WaylandEvent::PointerEvent((surface, _coords, PointerEventKind::Enter { .. })) => {
-                                if &surface == &timings_app_surface.wl_surface() {
-                                    timings_app_surface.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
-                                    // project_timings_gui.has_keyboard_focus = true;
-                                }
-                            },
-                            _ => {}
-                        }
-                    }
-                    timings_app_surface.handle_events(&mut app, &events, &mut project_timings_gui);
-                }
+                project_timings_gui.handle_events(&mut app, &events);
+                // if let Some(timings_app_surface) = &mut timings_app_surface {
+                //     for event in &events {
+                //         match event {
+                //             WaylandEvent::KeyboardEnter(surface, ..) => {
+                //                 if &surface == &timings_app_surface.wl_surface() {
+                //                     // project_timings_gui.has_keyboard_focus = true;
+                //                 }
+                //             },
+                //             WaylandEvent::PointerEvent((surface, _coords, PointerEventKind::Enter { .. })) => {
+                //                 if &surface == &timings_app_surface.wl_surface() {
+                //                     timings_app_surface.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+                //                     // project_timings_gui.has_keyboard_focus = true;
+                //                 }
+                //             },
+                //             _ => {}
+                //         }
+                //     }
+                //     timings_app_surface.handle_events(&mut app, &events, &mut project_timings_gui);
+                // }
             }
 
             // Other app events
@@ -212,11 +212,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             vd_timings_recorder.start_timing_from_desktop_name(&name);
                             let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
                             project_timings_gui.update_from_desktop_name(&name);
+                            project_timings_gui.show(&mut app);
 
-                            // Show the overlay if not already shown
-                            if let None = &mut timings_app_surface {
-                                timings_app_surface = Some(make_layer_surface(&mut app));
-                            }
                             hide_overlay_after_delay(appmsg_sender.clone(), 3);
                         }
                     },
@@ -248,13 +245,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         log::info!("Another instance tried to start");
                     }
                     AppMessage::RequestRender => {
-                        if let Some(timings_app_surface) = &mut timings_app_surface {
-                            timings_app_surface.request_frame();
-                            let _ = app.conn.flush();
-                        }
+                        project_timings_gui.request_frame(&mut app);
                     },
                     AppMessage::HideLayerOverlay => {
-                        timings_app_surface.take();
+                        project_timings_gui.hide();
                     }
                 }
             }
