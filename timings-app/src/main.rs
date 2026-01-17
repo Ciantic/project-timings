@@ -1,14 +1,16 @@
-mod overlay;
-use crate::overlay::ProjectTimingsGui;
-use crate::overlay::make_layer_surface;
 use chrono::Duration;
 use clap::Parser;
+use egui::CentralPanel;
+use egui::Context;
 use futures::StreamExt;
 use idle_monitor::run_idle_monitor;
 use log::trace;
 use single_instance::only_single_instance;
 use smithay_client_toolkit::seat::pointer::PointerEventKind;
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shell::wlr_layer::Anchor;
 use smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity;
+use smithay_client_toolkit::shell::wlr_layer::Layer;
 use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
@@ -27,6 +29,7 @@ use virtual_desktops::KDEVirtualDesktopController;
 use virtual_desktops::VirtualDesktopController;
 use virtual_desktops::VirtualDesktopMessage;
 use wayapp::Application;
+use wayapp::EguiAppData;
 use wayapp::EguiSurfaceState;
 use wayapp::WaylandEvent;
 
@@ -68,9 +71,7 @@ enum AppMessage {
     ShowDailyTotals,
     VirtualDesktop(VirtualDesktopMessage),
     VirtualDesktopThreadExited,
-    StartedTiming(String, String),
     HideLayerOverlay,
-    StoppedTiming,
     UserIdled,
     UserResumed,
     AnotherInstanceTriedToStart,
@@ -86,7 +87,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .init();
 
-    let mut app = Application::new();
     let cli = Cli::parse();
     let database_path = handle_database_path(&cli.database).await?;
     let (appmsg_sender, mut appmsgs) = tokio::sync::mpsc::unbounded_channel::<AppMessage>();
@@ -97,39 +97,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = sender_for_single_instance.send(AppMessage::AnotherInstanceTriedToStart);
     })?;
 
-    // Start the virtual desktop timings recorder
-    let mut vd_timings_recorder = VirtualDesktopTimingsRecorder::new(
+    let desktop_controller = KDEVirtualDesktopController::new().await?;
+
+    // Start the timings app
+    let mut timings_app = TimingsApp::new(
         &database_path,
         Duration::seconds(cli.minimum_timing as i64),
         appmsg_sender.clone(),
+        &desktop_controller,
     )
     .await?;
 
-    let desktop_controller = KDEVirtualDesktopController::new().await?;
-    let current_desktop = desktop_controller.get_current_desktop().await?;
-    let current_desktop_name = desktop_controller
-        .get_desktop_name(&current_desktop)
-        .await
-        .unwrap_or_else(|_| "Unknown".to_string());
-
     // Initialize timing for the current desktop
-    vd_timings_recorder.start_timing_from_desktop_name(&current_desktop_name);
-
-    let tray_icon_sender = appmsg_sender.clone();
-    let green_icon = Icon::from_buffer(ICON_GREEN, None, None)?;
-    let red_icon = Icon::from_buffer(ICON_RED, None, None)?;
-    let mut tray_icon = TrayIconBuilder::new()
-        .sender(move |m: &AppMessage| {
-            let _ = tray_icon_sender.send(m.clone());
-        })
-        .icon(green_icon.clone())
-        .tooltip(format!("Timings: {}", current_desktop_name).as_str())
-        .menu(
-            MenuBuilder::new()
-                .item("Show daily totals", AppMessage::ShowDailyTotals)
-                .item("Exit", AppMessage::Exit),
-        )
-        .build()?;
+    timings_app.start_timing().await?;
 
     spawn_idle_monitor_thread(appmsg_sender.clone(), cli.idle_timeout);
     spawn_stdin_reader(appmsg_sender.clone());
@@ -137,9 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_keepalive_thread(appmsg_sender.clone());
     spawn_virtual_desktop_listener(desktop_controller.clone(), appmsg_sender.clone());
 
-    let mut project_timings_gui =
-        ProjectTimingsGui::new(appmsg_sender.clone(), &desktop_controller);
-
+    let mut app = Application::new();
     let mut event_queue = app.event_queue.take().unwrap();
     loop {
         select! {
@@ -154,27 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }) => {
                 let _ = event_queue.dispatch_pending(&mut app);
                 let events = app.take_wayland_events();
-                // trace!("[ASYNC MAIN] ✓ Dispatched Wayland events {} on thread {:?}", events.len(), std::thread::current().id());
-                project_timings_gui.handle_events(&mut app, &events);
-                // if let Some(timings_app_surface) = &mut timings_app_surface {
-                //     for event in &events {
-                //         match event {
-                //             WaylandEvent::KeyboardEnter(surface, ..) => {
-                //                 if &surface == &timings_app_surface.wl_surface() {
-                //                     // project_timings_gui.has_keyboard_focus = true;
-                //                 }
-                //             },
-                //             WaylandEvent::PointerEvent((surface, _coords, PointerEventKind::Enter { .. })) => {
-                //                 if &surface == &timings_app_surface.wl_surface() {
-                //                     timings_app_surface.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
-                //                     // project_timings_gui.has_keyboard_focus = true;
-                //                 }
-                //             },
-                //             _ => {}
-                //         }
-                //     }
-                //     timings_app_surface.handle_events(&mut app, &events, &mut project_timings_gui);
-                // }
+                timings_app.handle_gui_events(&mut app, &events);
             }
 
             // Other app events
@@ -185,45 +143,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         break Ok(());
                     }
                     AppMessage::WriteTimings => {
-                        if let Err(e) = vd_timings_recorder.write_timings().await {
+                        if let Err(e) = timings_app.write_timings().await {
                             log::error!("Failed to write timings: {}", e);
                         }
                     }
                     AppMessage::KeepAlive => {
                         log::trace!("Keep alive timing");
-                        vd_timings_recorder.keep_alive();
+                        timings_app.keep_alive();
                     }
                     AppMessage::ShowDailyTotals => {
-                        if let Err(e) = vd_timings_recorder.show_daily_totals().await {
+                        if let Err(e) = timings_app.show_daily_totals().await {
                             log::error!("Failed to show daily totals: {}", e);
                         }
                     }
                     AppMessage::VirtualDesktop(vd_msg) => match vd_msg {
                         VirtualDesktopMessage::DesktopNameChanged(_id, name) => {
-                            vd_timings_recorder.start_timing_from_desktop_name(&name);
-                            let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
-                            project_timings_gui.update_from_desktop_name(&name);
+                            timings_app.start_timing_from_desktop_name(&name);
+                            timings_app.set_tray_tooltip(format!("Timings: {}", name).as_str());
+                            timings_app.update_gui_from_desktop_name(&name);
                         }
                         VirtualDesktopMessage::DesktopChange(id) => {
                             let name = desktop_controller
                                 .get_desktop_name(&id)
                                 .await
                                 .unwrap_or_else(|_| "Unknown".to_string());
-                            vd_timings_recorder.start_timing_from_desktop_name(&name);
-                            let _ = tray_icon.set_tooltip(format!("Timings: {}", name).as_str());
-                            project_timings_gui.update_from_desktop_name(&name);
-                            project_timings_gui.show(&mut app);
+                            timings_app.start_timing_from_desktop_name(&name);
+                            timings_app.set_tray_tooltip(format!("Timings: {}", name).as_str());
+                            timings_app.update_gui_from_desktop_name(&name);
+                            timings_app.show_gui(&mut app);
 
                             hide_overlay_after_delay(appmsg_sender.clone(), 3);
                         }
                     },
                     AppMessage::UserIdled => {
                         log::trace!("User activity changed to idling");
-                        vd_timings_recorder.stop_timing();
+                        timings_app.stop_timing();
                     }
                     AppMessage::UserResumed => {
                         log::trace!("User activity changed to resumed");
-                        vd_timings_recorder.resume_timing();
+                        timings_app.resume_timing();
                     }
                     AppMessage::VirtualDesktopThreadExited => {
                         log::warn!(
@@ -233,22 +191,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                         break Err("Virtual desktop listener thread has exited".into());
                     }
-                    AppMessage::StartedTiming(client, project) => {
-                        log::trace!("Started timing: client='{}', project='{}'", client, project);
-                        let _ = tray_icon.set_icon(&green_icon);
-                    }
-                    AppMessage::StoppedTiming => {
-                        log::trace!("Stopped timing");
-                        let _ = tray_icon.set_icon(&red_icon);
-                    }
                     AppMessage::AnotherInstanceTriedToStart => {
                         log::info!("Another instance tried to start");
                     }
                     AppMessage::RequestRender => {
-                        project_timings_gui.request_frame(&mut app);
+                        timings_app.request_gui_frame(&mut app);
                     },
                     AppMessage::HideLayerOverlay => {
-                        project_timings_gui.hide();
+                        timings_app.hide_gui();
                     }
                 }
             }
@@ -256,19 +206,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-struct VirtualDesktopTimingsRecorder {
+struct TimingsApp {
+    // Timing recording fields
     client: Option<String>,
     project: Option<String>,
     timings_recorder: timings::TimingsRecorder,
     pool: SqlitePool,
     sender: UnboundedSender<AppMessage>,
+    desktop_controller: KDEVirtualDesktopController,
+
+    // GUI fields
+    gui_client: String,
+    gui_project: String,
+    has_keyboard_focus: bool,
+    central_panel_has_focus: bool,
+    egui_surface_state: Option<EguiSurfaceState<LayerSurface>>,
+
+    // Tray icon
+    tray_icon: trayicon::TrayIcon<AppMessage>,
+    green_icon: Icon,
+    red_icon: Icon,
 }
 
-impl VirtualDesktopTimingsRecorder {
+impl TimingsApp {
     pub async fn new(
         database: &str,
         minimum_timing: Duration,
         sender: UnboundedSender<AppMessage>,
+        desktop_controller: &KDEVirtualDesktopController,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let options = SqliteConnectOptions::from_str(database)?.create_if_missing(true);
 
@@ -279,12 +244,38 @@ impl VirtualDesktopTimingsRecorder {
 
         let timings_recorder = timings::TimingsRecorder::new(minimum_timing);
 
+        // Build tray icon
+        let green_icon = Icon::from_buffer(ICON_GREEN, None, None)?;
+        let red_icon = Icon::from_buffer(ICON_RED, None, None)?;
+        let tray_icon_sender = sender.clone();
+        let tray_icon = TrayIconBuilder::new()
+            .sender(move |m: &AppMessage| {
+                let _ = tray_icon_sender.send(m.clone());
+            })
+            .icon(green_icon.clone())
+            .tooltip(format!("Timings").as_str())
+            .menu(
+                MenuBuilder::new()
+                    .item("Show daily totals", AppMessage::ShowDailyTotals)
+                    .item("Exit", AppMessage::Exit),
+            )
+            .build()?;
+
         Ok(Self {
             client: None,
             project: None,
             timings_recorder,
             pool,
             sender,
+            desktop_controller: desktop_controller.clone(),
+            gui_client: String::new(),
+            gui_project: String::new(),
+            has_keyboard_focus: false,
+            central_panel_has_focus: false,
+            egui_surface_state: None,
+            tray_icon,
+            green_icon,
+            red_icon,
         })
     }
 
@@ -292,7 +283,7 @@ impl VirtualDesktopTimingsRecorder {
     /// The desktop name is expected to be in the format "client: project".
     /// If no colon is present, the entire name is used as the client.
     /// Only starts timing if both client and project can be parsed.
-    pub fn start_timing_from_desktop_name(&mut self, desktop_name: &str) -> bool {
+    fn start_timing_from_desktop_name(&mut self, desktop_name: &str) -> bool {
         let (client, project) = Self::parse_desktop_name(desktop_name);
         let old_client = self.client.clone();
         let old_project = self.project.clone();
@@ -309,24 +300,34 @@ impl VirtualDesktopTimingsRecorder {
             );
             self.timings_recorder
                 .start_timing(client.clone(), project.clone(), chrono::Utc::now());
-            let _ = self.sender.send(AppMessage::StartedTiming(client, project));
+            self.tray_icon.set_icon(&self.green_icon).ok();
             true
         } else {
             log::warn!(
                 "Stopping timing: desktop name '{}' has no valid project",
                 desktop_name
             );
-            self.timings_recorder.stop_timing(chrono::Utc::now());
-            let _ = self.sender.send(AppMessage::StoppedTiming);
+            self.stop_timing();
             false
         }
+    }
+
+    pub async fn start_timing(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let current_desktop = self.desktop_controller.get_current_desktop().await?;
+        let current_desktop_name = self
+            .desktop_controller
+            .get_desktop_name(&current_desktop)
+            .await
+            .unwrap_or_else(|_| "Unknown".to_string());
+        self.start_timing_from_desktop_name(&current_desktop_name);
+        Ok(())
     }
 
     /// Stops the current timing.
     pub fn stop_timing(&mut self) {
         log::info!("Stopping timing");
         self.timings_recorder.stop_timing(chrono::Utc::now());
-        let _ = self.sender.send(AppMessage::StoppedTiming);
+        self.tray_icon.set_icon(&self.red_icon).ok();
     }
 
     pub fn resume_timing(&mut self) {
@@ -341,9 +342,6 @@ impl VirtualDesktopTimingsRecorder {
 
             self.timings_recorder
                 .start_timing(client.clone(), project.clone(), chrono::Utc::now());
-            let _ = self
-                .sender
-                .send(AppMessage::StartedTiming(client.clone(), project.clone()));
         }
     }
 
@@ -412,6 +410,140 @@ impl VirtualDesktopTimingsRecorder {
         } else {
             (Some(desktop_name.trim().to_string()), None)
         }
+    }
+
+    // GUI methods
+    pub fn show_gui(&mut self, app: &mut Application) {
+        if self.egui_surface_state.is_some() {
+            return;
+        }
+        self.egui_surface_state = Some(make_layer_surface(app));
+    }
+
+    pub fn hide_gui(&mut self) {
+        if self.has_keyboard_focus {
+            log::info!("Not hiding overlay, has keyboard focus");
+            return;
+        }
+        self.egui_surface_state = None;
+    }
+
+    pub fn handle_gui_events(&mut self, app: &mut Application, events: &[WaylandEvent]) {
+        if let Some(mut surface_state) = self.egui_surface_state.take() {
+            surface_state.handle_events(app, events, self);
+            self.egui_surface_state = Some(surface_state);
+        }
+
+        for event in events {
+            match event {
+                WaylandEvent::KeyboardEnter(_, ..) => {
+                    trace!("Overlay keyboard enter");
+                    self.has_keyboard_focus = true;
+                }
+                WaylandEvent::KeyboardLeave(_, ..) => {
+                    trace!("Overlay keyboard leave");
+                    self.has_keyboard_focus = false;
+                    hide_overlay_after_delay(self.sender.clone(), 3);
+                }
+                WaylandEvent::PointerEvent((_, _, PointerEventKind::Press { .. })) => {
+                    self.egui_surface_state.as_ref().map(|s| {
+                        s.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn request_gui_frame(&mut self, app: &mut Application) {
+        if let Some(ref mut surface_state) = self.egui_surface_state {
+            surface_state.request_frame();
+            let _ = app.conn.flush();
+        }
+    }
+
+    /// Updates the GUI client and project fields from a desktop name
+    pub fn update_gui_from_desktop_name(&mut self, desktop_name: &str) {
+        let (client, project) = Self::parse_desktop_name(desktop_name);
+        self.gui_client = client.unwrap_or_default();
+        self.gui_project = project.unwrap_or_default();
+        log::info!(
+            "Updated overlay: client='{}', project='{}'",
+            self.gui_client,
+            self.gui_project
+        );
+        let _ = self.sender.send(AppMessage::RequestRender);
+    }
+
+    fn update_desktop_name_from_gui(&mut self) {
+        if self.gui_client.is_empty() || self.gui_project.is_empty() {
+            log::warn!("Client or Project is empty, not updating desktop name");
+            return;
+        }
+
+        let desktop_name = format!("{}: {}", self.gui_client, self.gui_project);
+        log::info!("Updating desktop name to: {}", desktop_name);
+        if let Err(e) =
+            futures::executor::block_on(self.desktop_controller.update_desktop_name(&desktop_name))
+        {
+            log::error!("Failed to update desktop name: {}", e);
+        }
+    }
+
+    pub fn set_tray_tooltip(&mut self, tooltip: &str) {
+        let _ = self.tray_icon.set_tooltip(tooltip);
+    }
+}
+
+impl EguiAppData for TimingsApp {
+    fn ui(&mut self, ctx: &Context) {
+        ctx.set_visuals(egui::Visuals::light());
+        let bg_color = ctx.style().visuals.panel_fill;
+
+        let foo = CentralPanel::default()
+            .frame(
+                egui::Frame::default()
+                    .fill(bg_color)
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::BLACK))
+                    .inner_margin(10.0),
+            )
+            .show(ctx, |ui| {
+                ui.heading("Project Timings");
+
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.label("Client:");
+                    ui.text_edit_singleline(&mut self.gui_client);
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Project:");
+                    ui.text_edit_singleline(&mut self.gui_project);
+                });
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    if ui.button("Update name").clicked() {
+                        self.update_desktop_name_from_gui();
+                    }
+                });
+
+                // Show label (focused) if has keyboard focus
+                if self.has_keyboard_focus {
+                    ui.label("Keyboard focused");
+                }
+                if self.central_panel_has_focus {
+                    ui.label("Central panel focused");
+                }
+
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.label("Current timing:");
+                    ui.label("01:01:01");
+                });
+            });
+        self.central_panel_has_focus = foo.response.has_focus();
     }
 }
 
@@ -591,4 +723,26 @@ fn hide_overlay_after_delay(
         tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
         let _ = sender.send(AppMessage::HideLayerOverlay);
     }));
+}
+
+pub fn make_layer_surface(app: &mut Application) -> EguiSurfaceState<LayerSurface> {
+    let first_monitor = app
+        .output_state
+        .outputs()
+        .collect::<Vec<_>>()
+        .get(0)
+        .cloned();
+    let layer_surface = app.layer_shell.create_layer_surface(
+        &app.qh,
+        app.compositor_state.create_surface(&app.qh),
+        Layer::Top,
+        Some("ProjectTimings"),
+        first_monitor.as_ref(),
+    );
+    layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
+    layer_surface.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
+    layer_surface.set_margin(0, 0, 20, 20);
+    layer_surface.set_size(320, 160);
+    layer_surface.commit();
+    EguiSurfaceState::new(&app, layer_surface, 320, 160)
 }
