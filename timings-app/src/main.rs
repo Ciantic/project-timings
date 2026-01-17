@@ -29,7 +29,6 @@ use virtual_desktops::KDEVirtualDesktopController;
 use virtual_desktops::VirtualDesktopController;
 use virtual_desktops::VirtualDesktopMessage;
 use wayapp::Application;
-use wayapp::EguiAppData;
 use wayapp::EguiSurfaceState;
 use wayapp::WaylandEvent;
 
@@ -69,6 +68,7 @@ enum AppMessage {
     WriteTimings,
     KeepAlive,
     ShowDailyTotals,
+    TrayIconClicked,
     VirtualDesktop(VirtualDesktopMessage),
     VirtualDesktopThreadExited,
     HideLayerOverlay,
@@ -156,6 +156,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             log::error!("Failed to show daily totals: {}", e);
                         }
                     }
+                    AppMessage::TrayIconClicked => {
+                        timings_app.show_gui(&mut app);
+                    }
                     AppMessage::VirtualDesktop(vd_msg) => match vd_msg {
                         VirtualDesktopMessage::DesktopNameChanged(_id, name) => {
                             timings_app.start_timing_from_desktop_name(&name);
@@ -171,8 +174,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             timings_app.set_tray_tooltip(format!("Timings: {}", name).as_str());
                             timings_app.update_gui_from_desktop_name(&name);
                             timings_app.show_gui(&mut app);
-
-                            hide_overlay_after_delay(appmsg_sender.clone(), 3);
                         }
                     },
                     AppMessage::UserIdled => {
@@ -252,6 +253,7 @@ impl TimingsApp {
             .sender(move |m: &AppMessage| {
                 let _ = tray_icon_sender.send(m.clone());
             })
+            .on_click(AppMessage::TrayIconClicked)
             .icon(green_icon.clone())
             .tooltip(format!("Timings").as_str())
             .menu(
@@ -289,6 +291,8 @@ impl TimingsApp {
         let old_project = self.project.clone();
         self.client = client.clone();
         self.project = project.clone();
+        self.gui_client = client.clone().unwrap_or_default();
+        self.gui_project = project.clone().unwrap_or_default();
 
         if let (Some(client), Some(project)) = (client, project) {
             log::info!(
@@ -418,6 +422,8 @@ impl TimingsApp {
             return;
         }
         self.egui_surface_state = Some(make_layer_surface(app));
+        self.request_gui_frame(app);
+        hide_overlay_after_delay(self.sender.clone(), 3);
     }
 
     pub fn hide_gui(&mut self) {
@@ -429,11 +435,13 @@ impl TimingsApp {
     }
 
     pub fn handle_gui_events(&mut self, app: &mut Application, events: &[WaylandEvent]) {
+        // Handle egui surface events
         if let Some(mut surface_state) = self.egui_surface_state.take() {
-            surface_state.handle_events(app, events, self);
+            surface_state.handle_events(app, events, &mut |ctx| self.overlay_ui(ctx));
             self.egui_surface_state = Some(surface_state);
         }
 
+        // Handle other Wayland events
         for event in events {
             match event {
                 WaylandEvent::KeyboardEnter(_, ..) => {
@@ -493,10 +501,8 @@ impl TimingsApp {
     pub fn set_tray_tooltip(&mut self, tooltip: &str) {
         let _ = self.tray_icon.set_tooltip(tooltip);
     }
-}
 
-impl EguiAppData for TimingsApp {
-    fn ui(&mut self, ctx: &Context) {
+    fn overlay_ui(&mut self, ctx: &Context) {
         ctx.set_visuals(egui::Visuals::light());
         let bg_color = ctx.style().visuals.panel_fill;
 
@@ -504,7 +510,14 @@ impl EguiAppData for TimingsApp {
             .frame(
                 egui::Frame::default()
                     .fill(bg_color)
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::BLACK))
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        if self.has_keyboard_focus {
+                            egui::Color32::LIGHT_BLUE
+                        } else {
+                            egui::Color32::GRAY
+                        },
+                    ))
                     .inner_margin(10.0),
             )
             .show(ctx, |ui| {
