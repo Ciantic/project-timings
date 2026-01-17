@@ -7,6 +7,8 @@ use futures::StreamExt;
 use idle_monitor::run_idle_monitor;
 use log::trace;
 use single_instance::only_single_instance;
+use smithay_client_toolkit::seat::pointer::PointerEventKind;
+use smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity;
 use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
@@ -26,6 +28,7 @@ use virtual_desktops::VirtualDesktopController;
 use virtual_desktops::VirtualDesktopMessage;
 use wayapp::Application;
 use wayapp::EguiSurfaceState;
+use wayapp::WaylandEvent;
 
 const DEFAULT_DATABASE: &str = "~/.config/timings/timings.db";
 const ICON_GREEN: &[u8] = include_bytes!("../resources/green.ico");
@@ -154,6 +157,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let events = app.take_wayland_events();
                 // trace!("[ASYNC MAIN] ✓ Dispatched Wayland events {} on thread {:?}", events.len(), std::thread::current().id());
                 if let Some(timings_app_surface) = &mut timings_app_surface {
+                    for event in &events {
+                        match event {
+                            WaylandEvent::KeyboardEnter(surface, ..) => {
+                                if &surface == &timings_app_surface.wl_surface() {
+                                    // project_timings_gui.has_keyboard_focus = true;
+                                }
+                            },
+                            WaylandEvent::PointerEvent((surface, _coords, PointerEventKind::Enter { .. })) => {
+                                if &surface == &timings_app_surface.wl_surface() {
+                                    timings_app_surface.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+                                    // project_timings_gui.has_keyboard_focus = true;
+                                }
+                            },
+                            _ => {}
+                        }
+                    }
                     timings_app_surface.handle_events(&mut app, &events, &mut project_timings_gui);
                 }
             }

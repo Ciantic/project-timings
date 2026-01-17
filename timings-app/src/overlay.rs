@@ -1,28 +1,25 @@
 use crate::AppMessage;
 use egui::CentralPanel;
 use egui::Context;
-use smithay_client_toolkit::reexports::client::Connection;
-use smithay_client_toolkit::reexports::client::QueueHandle;
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::Anchor;
 use smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity;
 use smithay_client_toolkit::shell::wlr_layer::Layer;
 use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
-use std::cell::RefCell;
-use std::rc::Rc;
 use tokio::sync::mpsc::UnboundedSender;
 use virtual_desktops::KDEVirtualDesktopController;
 use virtual_desktops::VirtualDesktopController;
 use wayapp::Application;
 use wayapp::EguiAppData;
 use wayapp::EguiSurfaceState;
-use wayapp::RequestFrame;
 
 pub struct ProjectTimingsGui {
     sender: UnboundedSender<AppMessage>,
     client: String,
     project: String,
     desktop_controller: KDEVirtualDesktopController,
+    has_keyboard_focus: bool,
+    central_panel_has_focus: bool,
 }
 
 impl ProjectTimingsGui {
@@ -35,33 +32,69 @@ impl ProjectTimingsGui {
             client: String::new(),
             project: String::new(),
             desktop_controller: desktop_controller.clone(),
+            has_keyboard_focus: false,
+            central_panel_has_focus: false,
         }
     }
 }
 
 impl EguiAppData for ProjectTimingsGui {
     fn ui(&mut self, ctx: &Context) {
-        CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Project Timings");
+        ctx.set_visuals(egui::Visuals::light());
+        let bg_color = ctx.style().visuals.panel_fill;
 
-            ui.separator();
+        self.has_keyboard_focus = false;
 
-            ui.horizontal(|ui| {
-                ui.label("Client:");
-                ui.text_edit_singleline(&mut self.client);
+        let foo = CentralPanel::default()
+            .frame(
+                egui::Frame::default()
+                    .fill(bg_color)
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::BLACK))
+                    .inner_margin(10.0),
+            )
+            .show(ctx, |ui| {
+                ui.heading("Project Timings");
+
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.label("Client:");
+                    let client_response = ui.text_edit_singleline(&mut self.client);
+                    if client_response.has_focus() {
+                        self.has_keyboard_focus = true;
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Project:");
+                    let project_response = ui.text_edit_singleline(&mut self.project);
+                    if project_response.has_focus() {
+                        self.has_keyboard_focus = true;
+                    }
+                });
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    if ui.button("Update name").clicked() {
+                        self.update_desktop_name();
+                    }
+                });
+
+                // Show label (focused) if has keyboard focus
+                if self.has_keyboard_focus {
+                    ui.label("Keyboard focused");
+                }
+                if self.central_panel_has_focus {
+                    ui.label("Central panel focused");
+                }
+
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.label("Current timing:");
+                    ui.label("01:01:01");
+                });
             });
-
-            ui.horizontal(|ui| {
-                ui.label("Project:");
-                ui.text_edit_singleline(&mut self.project);
-            });
-
-            ui.separator();
-
-            if ui.button("Update Desktop Name").clicked() {
-                self.update_desktop_name();
-            }
-        });
+        self.central_panel_has_focus = foo.response.has_focus();
     }
 }
 
@@ -120,15 +153,21 @@ impl ProjectTimingsGui {
 }
 
 pub fn make_layer_surface(app: &mut Application) -> EguiSurfaceState<LayerSurface> {
+    let first_monitor = app
+        .output_state
+        .outputs()
+        .collect::<Vec<_>>()
+        .get(0)
+        .cloned();
     let layer_surface = app.layer_shell.create_layer_surface(
         &app.qh,
         app.compositor_state.create_surface(&app.qh),
         Layer::Top,
         Some("ProjectTimings"),
-        None,
+        first_monitor.as_ref(),
     );
-    layer_surface.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
-    layer_surface.set_anchor(Anchor::BOTTOM);
+    layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
+    layer_surface.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
     layer_surface.set_margin(0, 0, 20, 20);
     layer_surface.set_size(320, 160);
     layer_surface.commit();
