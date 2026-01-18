@@ -232,15 +232,3 @@ impl TotalsCache {
         }
     }
 }
-
-#[cfg(test)]
-mod test {
-    #[test]
-    fn test_something() {
-        let now = chrono::Utc::now();
-        let result = now.with_timezone(&chrono::Local).date_naive();
-        println!("Result: {}", result);
-        println!("Type: NaiveDate");
-        println!("Full debug: {:?}", result);
-    }
-}
