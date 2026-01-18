@@ -504,6 +504,9 @@ impl TimingsApp {
                     trace!("Overlay keyboard leave");
                     self.has_keyboard_focus = false;
                     hide_overlay_after_delay(self.sender.clone(), 3);
+                    self.egui_surface_state.as_ref().map(|s| {
+                        s.set_keyboard_interactivity(KeyboardInteractivity::None);
+                    });
                 }
                 WaylandEvent::PointerEvent((_, _, PointerEventKind::Press { .. })) => {
                     self.egui_surface_state.as_ref().map(|s| {
