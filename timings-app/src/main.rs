@@ -1,6 +1,7 @@
 use chrono::Duration;
 use clap::Parser;
 use egui::CentralPanel;
+use egui::Color32;
 use egui::Context;
 use futures::StreamExt;
 use idle_monitor::run_idle_monitor;
@@ -192,6 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     AppMessage::UserResumed => {
                         log::trace!("User activity changed to resumed");
+                        let _ = timings_app.update_totals().await;
                         timings_app.resume_timing();
                     }
                     AppMessage::VirtualDesktopThreadExited => {
@@ -366,6 +368,7 @@ impl TimingsApp {
 
             self.timings_recorder
                 .start_timing(client.clone(), project.clone(), chrono::Utc::now());
+            self.is_running = true;
         }
     }
 
@@ -545,60 +548,109 @@ impl TimingsApp {
                     .inner_margin(10.0),
             )
             .show(ctx, |ui| {
-                ui.heading("Project Timings");
+                ui.vertical(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.gui_client)
+                            .desired_width(f32::INFINITY)
+                            .horizontal_align(egui::Align::Center)
+                            .background_color(Color32::from_white_alpha(0))
+                            .font(egui::FontId::new(20.0, egui::FontFamily::Proportional)),
+                    );
+                    ui.add_space(5.0);
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.gui_project)
+                            .desired_width(f32::INFINITY)
+                            .horizontal_align(egui::Align::Center)
+                            .background_color(Color32::from_white_alpha(0))
+                            .font(egui::FontId::new(20.0, egui::FontFamily::Proportional)),
+                    );
 
-                ui.separator();
-
-                ui.horizontal(|ui| {
-                    ui.label("Client:");
-                    ui.text_edit_singleline(&mut self.gui_client);
-                });
-
-                ui.horizontal(|ui| {
-                    ui.label("Project:");
-                    ui.text_edit_singleline(&mut self.gui_project);
-                });
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    if ui.button("Update name").clicked() {
+                    if resp.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        // println!("Updating desktop name from GUI");
                         self.update_desktop_name_from_gui();
                     }
                 });
 
+                // ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                //     if ui.button("Update name").clicked() {
+                //         self.update_desktop_name_from_gui();
+                //     }
+                // });
+
                 // Show label (focused) if has keyboard focus
-                if self.has_keyboard_focus {
-                    ui.label("Keyboard focused");
-                }
+                // if self.has_keyboard_focus {
+                //     ui.label("Keyboard focused");
+                // }
 
-                ui.separator();
+                ui.vertical_centered(|ui| {
+                    ui.set_max_width(150.0);
+                    ui.set_max_height(65.0);
+                    ui.horizontal_centered(|ui| {
+                        let circle_color = if self.is_running {
+                            egui::Color32::GREEN
+                        } else {
+                            egui::Color32::RED
+                        };
 
-                // Draw circle indicator for running/stopped state
-                ui.horizontal(|ui| {
-                    let circle_color = if self.is_running {
-                        egui::Color32::GREEN
-                    } else {
-                        egui::Color32::RED
-                    };
+                        let (response, painter) =
+                            ui.allocate_painter(egui::Vec2::splat(30.0), egui::Sense::empty());
+                        let center = response.rect.center();
+                        painter.circle_filled(
+                            center,
+                            if self.is_running { 9.5 } else { 4.0 },
+                            circle_color,
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                self.gui_totals
+                                    .get(&(self.gui_client.clone(), self.gui_project.clone()))
+                                    .as_ref()
+                                    .map(|t| duration_to_hh_mm_ss(&t.today))
+                                    // .map(|t| format!("{:.5} hours", t.today.num_seconds() as f64
+                                    // / 3600.0))
+                                    .unwrap_or_else(|| "00:00:00".to_string()),
+                            )
+                            .size(20.0),
+                        );
+                    });
+                });
 
-                    let (response, painter) =
-                        ui.allocate_painter(egui::Vec2::splat(20.0), egui::Sense::empty());
-                    let center = response.rect.center();
-                    painter.circle_filled(
-                        center,
-                        if self.is_running { 8.0 } else { 4.0 },
-                        circle_color,
-                    );
+                ui.columns(3, |cols| {
+                    // Last 8 weeks column
+                    cols[0].vertical_centered(|ui| {
+                        ui.label("Eight weeks");
+                        ui.label(
+                            self.gui_totals
+                                .get(&(self.gui_client.clone(), self.gui_project.clone()))
+                                .as_ref()
+                                .map(|t| duration_to_hours(&t.eight_weeks))
+                                .unwrap_or_else(|| "N/A".to_string()),
+                        );
+                    });
 
-                    ui.label("Current timing:");
-                    ui.label(
-                        self.gui_totals
-                            .get(&(self.gui_client.clone(), self.gui_project.clone()))
-                            .as_ref()
-                            .map(|t| duration_to_hh_mm_ss(&t.today))
-                            // .map(|t| format!("{:.5} hours", t.today.num_seconds() as f64 /
-                            // 3600.0))
-                            .unwrap_or_else(|| "N/A".to_string()),
-                    );
+                    // Last week column
+                    cols[1].vertical_centered(|ui| {
+                        ui.label("Last week");
+                        ui.label(
+                            self.gui_totals
+                                .get(&(self.gui_client.clone(), self.gui_project.clone()))
+                                .as_ref()
+                                .map(|t| duration_to_hours(&t.last_week))
+                                .unwrap_or_else(|| "N/A".to_string()),
+                        );
+                    });
+
+                    // This week column
+                    cols[2].vertical_centered(|ui| {
+                        ui.label("This week");
+                        ui.label(
+                            self.gui_totals
+                                .get(&(self.gui_client.clone(), self.gui_project.clone()))
+                                .as_ref()
+                                .map(|t| duration_to_hours(&t.this_week))
+                                .unwrap_or_else(|| "N/A".to_string()),
+                        );
+                    });
                 });
             });
     }
@@ -811,9 +863,9 @@ pub fn make_layer_surface(app: &mut Application) -> EguiSurfaceState<LayerSurfac
     layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
     layer_surface.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
     layer_surface.set_margin(0, 0, 20, 20);
-    layer_surface.set_size(320, 160);
+    layer_surface.set_size(350, 200);
     layer_surface.commit();
-    EguiSurfaceState::new(&app, layer_surface, 320, 160)
+    EguiSurfaceState::new(&app, layer_surface, 350, 200)
 }
 
 fn duration_to_hh_mm_ss(duration: &chrono::Duration) -> String {
@@ -822,4 +874,8 @@ fn duration_to_hh_mm_ss(duration: &chrono::Duration) -> String {
     let minutes = (total_seconds % 3600) / 60;
     let seconds = total_seconds % 60;
     format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+}
+
+fn duration_to_hours(duration: &chrono::Duration) -> String {
+    format!("{:.2}", duration.num_seconds() as f64 / 3600.0)
 }
