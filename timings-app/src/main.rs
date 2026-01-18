@@ -14,6 +14,7 @@ use smithay_client_toolkit::shell::wlr_layer::Layer;
 use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -67,6 +68,7 @@ enum AppMessage {
     Exit,
     WriteTimings,
     KeepAlive,
+    UpdateTotals,
     ShowDailyTotals,
     TrayIconClicked,
     VirtualDesktop(VirtualDesktopMessage),
@@ -84,6 +86,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(
         env_logger::Env::default()
             .default_filter_or("timings_app=trace,timings=trace,wayapp=trace"),
+    )
+    .init();
+
+    #[cfg(not(debug_assertions))]
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("timings_app=warn,timings=warn,wayapp=warn"),
     )
     .init();
 
@@ -116,6 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_write_timings_thread(appmsg_sender.clone());
     spawn_keepalive_thread(appmsg_sender.clone());
     spawn_virtual_desktop_listener(desktop_controller.clone(), appmsg_sender.clone());
+    spawn_update_totals_thread(appmsg_sender.clone());
 
     let mut app = Application::new();
     let mut event_queue = app.event_queue.take().unwrap();
@@ -137,7 +146,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Other app events
             Some(event) = appmsgs.recv() => {
-                trace!("[ASYNC MAIN] ✓ Received AppMessage::{:?} on thread {:?}", event, std::thread::current().id());
                 match event {
                     AppMessage::Exit => {
                         break Ok(());
@@ -157,13 +165,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     AppMessage::TrayIconClicked => {
+                        timings_app.update_totals().await;
                         timings_app.show_gui(&mut app);
                     }
                     AppMessage::VirtualDesktop(vd_msg) => match vd_msg {
-                        VirtualDesktopMessage::DesktopNameChanged(_id, name) => {
-                            timings_app.start_timing_from_desktop_name(&name);
-                            timings_app.set_tray_tooltip(format!("Timings: {}", name).as_str());
-                            timings_app.update_gui_from_desktop_name(&name);
+                        VirtualDesktopMessage::DesktopNameChanged(id, name) => {
+                            let current_desktop = desktop_controller.get_current_desktop().await?;
+                            if id == current_desktop {
+                                timings_app.start_timing_from_desktop_name(&name);
+                                timings_app.update_totals().await;
+                            }
                         }
                         VirtualDesktopMessage::DesktopChange(id) => {
                             let name = desktop_controller
@@ -171,8 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .await
                                 .unwrap_or_else(|_| "Unknown".to_string());
                             timings_app.start_timing_from_desktop_name(&name);
-                            timings_app.set_tray_tooltip(format!("Timings: {}", name).as_str());
-                            timings_app.update_gui_from_desktop_name(&name);
+                            timings_app.update_totals().await;
                             timings_app.show_gui(&mut app);
                         }
                     },
@@ -195,11 +205,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     AppMessage::AnotherInstanceTriedToStart => {
                         log::info!("Another instance tried to start");
                     }
-                    AppMessage::RequestRender => {
-                        timings_app.request_gui_frame(&mut app);
-                    },
                     AppMessage::HideLayerOverlay => {
                         timings_app.hide_gui();
+                    }
+                    AppMessage::RequestRender => {
+                        timings_app.request_gui_frame(&mut app);
+                    }
+                    AppMessage::UpdateTotals => {
+                        let _ = timings_app.update_totals().await;
+                        timings_app.request_gui_frame(&mut app);
                     }
                 }
             }
@@ -215,12 +229,13 @@ struct TimingsApp {
     pool: SqlitePool,
     sender: UnboundedSender<AppMessage>,
     desktop_controller: KDEVirtualDesktopController,
+    is_running: bool,
 
     // GUI fields
     gui_client: String,
     gui_project: String,
+    gui_totals: HashMap<(String, String), timings::Totals>,
     has_keyboard_focus: bool,
-    central_panel_has_focus: bool,
     egui_surface_state: Option<EguiSurfaceState<LayerSurface>>,
 
     // Tray icon
@@ -270,11 +285,12 @@ impl TimingsApp {
             pool,
             sender,
             desktop_controller: desktop_controller.clone(),
+            gui_totals: HashMap::new(),
             gui_client: String::new(),
             gui_project: String::new(),
             has_keyboard_focus: false,
-            central_panel_has_focus: false,
             egui_surface_state: None,
+            is_running: false,
             tray_icon,
             green_icon,
             red_icon,
@@ -304,7 +320,9 @@ impl TimingsApp {
             );
             self.timings_recorder
                 .start_timing(client.clone(), project.clone(), chrono::Utc::now());
+            self.is_running = true;
             self.tray_icon.set_icon(&self.green_icon).ok();
+            self.sender.send(AppMessage::RequestRender).ok();
             true
         } else {
             log::warn!(
@@ -332,6 +350,8 @@ impl TimingsApp {
         log::info!("Stopping timing");
         self.timings_recorder.stop_timing(chrono::Utc::now());
         self.tray_icon.set_icon(&self.red_icon).ok();
+        self.is_running = false;
+        self.sender.send(AppMessage::RequestRender).ok();
     }
 
     pub fn resume_timing(&mut self) {
@@ -346,6 +366,27 @@ impl TimingsApp {
 
             self.timings_recorder
                 .start_timing(client.clone(), project.clone(), chrono::Utc::now());
+        }
+    }
+
+    /// Updates the totals cache.
+    pub async fn update_totals(&mut self) {
+        if let Some(client) = self.client.as_ref()
+            && let Some(project) = self.project.as_ref()
+            && self.egui_surface_state.is_some()
+        {
+            log::info!("Updating totals cache");
+            let mut conn = self.pool.acquire().await.unwrap();
+            let now = chrono::Utc::now();
+            if let Some(totals) = self
+                .timings_recorder
+                .get_totals(client, project, now, &mut *conn)
+                .await
+                .ok()
+            {
+                self.gui_totals
+                    .insert((client.clone(), project.clone()), totals);
+            }
         }
     }
 
@@ -418,12 +459,12 @@ impl TimingsApp {
 
     // GUI methods
     pub fn show_gui(&mut self, app: &mut Application) {
+        hide_overlay_after_delay(self.sender.clone(), 3);
         if self.egui_surface_state.is_some() {
             return;
         }
         self.egui_surface_state = Some(make_layer_surface(app));
         self.request_gui_frame(app);
-        hide_overlay_after_delay(self.sender.clone(), 3);
     }
 
     pub fn hide_gui(&mut self) {
@@ -470,19 +511,6 @@ impl TimingsApp {
         }
     }
 
-    /// Updates the GUI client and project fields from a desktop name
-    pub fn update_gui_from_desktop_name(&mut self, desktop_name: &str) {
-        let (client, project) = Self::parse_desktop_name(desktop_name);
-        self.gui_client = client.unwrap_or_default();
-        self.gui_project = project.unwrap_or_default();
-        log::info!(
-            "Updated overlay: client='{}', project='{}'",
-            self.gui_client,
-            self.gui_project
-        );
-        let _ = self.sender.send(AppMessage::RequestRender);
-    }
-
     fn update_desktop_name_from_gui(&mut self) {
         if self.gui_client.is_empty() || self.gui_project.is_empty() {
             log::warn!("Client or Project is empty, not updating desktop name");
@@ -498,20 +526,16 @@ impl TimingsApp {
         }
     }
 
-    pub fn set_tray_tooltip(&mut self, tooltip: &str) {
-        let _ = self.tray_icon.set_tooltip(tooltip);
-    }
-
     fn overlay_ui(&mut self, ctx: &Context) {
         ctx.set_visuals(egui::Visuals::light());
         let bg_color = ctx.style().visuals.panel_fill;
 
-        let foo = CentralPanel::default()
+        CentralPanel::default()
             .frame(
                 egui::Frame::default()
                     .fill(bg_color)
                     .stroke(egui::Stroke::new(
-                        1.0,
+                        2.0,
                         if self.has_keyboard_focus {
                             egui::Color32::LIGHT_BLUE
                         } else {
@@ -545,18 +569,38 @@ impl TimingsApp {
                 if self.has_keyboard_focus {
                     ui.label("Keyboard focused");
                 }
-                if self.central_panel_has_focus {
-                    ui.label("Central panel focused");
-                }
 
                 ui.separator();
 
+                // Draw circle indicator for running/stopped state
                 ui.horizontal(|ui| {
+                    let circle_color = if self.is_running {
+                        egui::Color32::GREEN
+                    } else {
+                        egui::Color32::RED
+                    };
+
+                    let (response, painter) =
+                        ui.allocate_painter(egui::Vec2::splat(20.0), egui::Sense::empty());
+                    let center = response.rect.center();
+                    painter.circle_filled(
+                        center,
+                        if self.is_running { 8.0 } else { 4.0 },
+                        circle_color,
+                    );
+
                     ui.label("Current timing:");
-                    ui.label("01:01:01");
+                    ui.label(
+                        self.gui_totals
+                            .get(&(self.gui_client.clone(), self.gui_project.clone()))
+                            .as_ref()
+                            .map(|t| duration_to_hh_mm_ss(&t.today))
+                            // .map(|t| format!("{:.5} hours", t.today.num_seconds() as f64 /
+                            // 3600.0))
+                            .unwrap_or_else(|| "N/A".to_string()),
+                    );
                 });
             });
-        self.central_panel_has_focus = foo.response.has_focus();
     }
 }
 
@@ -668,12 +712,24 @@ fn spawn_write_timings_thread(app_message_sender: tokio::sync::mpsc::UnboundedSe
     });
 }
 
-/// Spawns a thread that sends KeepAlive message every 30 seconds
+/// Spawns a thread that sends a tick message every second
 fn spawn_keepalive_thread(app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>) {
     thread::spawn(move || {
         loop {
             thread::sleep(std::time::Duration::from_secs(30));
             if app_message_sender.send(AppMessage::KeepAlive).is_err() {
+                // Main thread has exited, stop the loop
+                break;
+            }
+        }
+    });
+}
+/// Spawns a thread that sends KeepAlive message every 30 seconds
+fn spawn_update_totals_thread(app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>) {
+    thread::spawn(move || {
+        loop {
+            thread::sleep(std::time::Duration::from_secs(1));
+            if app_message_sender.send(AppMessage::UpdateTotals).is_err() {
                 // Main thread has exited, stop the loop
                 break;
             }
@@ -758,4 +814,12 @@ pub fn make_layer_surface(app: &mut Application) -> EguiSurfaceState<LayerSurfac
     layer_surface.set_size(320, 160);
     layer_surface.commit();
     EguiSurfaceState::new(&app, layer_surface, 320, 160)
+}
+
+fn duration_to_hh_mm_ss(duration: &chrono::Duration) -> String {
+    let total_seconds = duration.num_seconds();
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
 }

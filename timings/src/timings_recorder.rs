@@ -1,7 +1,11 @@
 use crate::Error;
 use crate::Timing;
 use crate::TimingsMutations;
+use crate::TimingsQueries;
+use crate::Totals;
+use crate::TotalsCache;
 use crate::api::TimingsRecording;
+use crate::totals_cache;
 use chrono::DateTime;
 use chrono::Duration;
 use chrono::Utc;
@@ -10,7 +14,7 @@ use chrono::Utc;
 // https://github.com/Ciantic/winvd-monitoring/blob/b9e27d84a8412b0e97285f0dd869f56a57b3df4b/ui/TimingRecorder.ts#L14
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
-struct CurrentTiming {
+pub struct CurrentTiming {
     pub start: DateTime<Utc>,
     pub project: String,
     pub client: String,
@@ -21,23 +25,54 @@ pub struct TimingsRecorder {
     current_timing: Option<CurrentTiming>,
     last_keep_alive: Option<DateTime<Utc>>,
     minimum_timing: Duration,
+    totals_cache: TotalsCache,
 }
 
 impl TimingsRecorder {
     pub fn new(minimum_timing: Duration) -> Self {
+        let min = if minimum_timing < Duration::zero() {
+            Duration::zero()
+        } else {
+            minimum_timing
+        };
         TimingsRecorder {
             unwritten_timings: Vec::new(),
             current_timing: None,
             last_keep_alive: None,
-            minimum_timing: if minimum_timing < Duration::zero() {
-                Duration::zero()
-            } else {
-                minimum_timing
-            },
+            minimum_timing: min,
+            totals_cache: TotalsCache::new(),
         }
     }
 
-    fn add_timing(&mut self, timing: Timing) {
+    /// Get totals for a client/project, either from cache or by calculating
+    /// from database.
+    pub async fn get_totals<T: TimingsQueries + TimingsMutations>(
+        &mut self,
+        client: &str,
+        project: &str,
+        now: DateTime<Utc>,
+        conn: &mut T,
+    ) -> Result<Totals, Error> {
+        if !self.totals_cache.has_cached_totals(client, project) {
+            // Writing timings before getting totals to ensure up-to-date data for uncached
+            // totals
+            self.write_timings(conn, now).await?;
+        }
+
+        let current_timing_start = self.current_timing.as_ref().and_then(|ct| {
+            if ct.client == client && ct.project == project {
+                Some(ct.start)
+            } else {
+                None
+            }
+        });
+
+        self.totals_cache
+            .get_totals(client, project, now, conn, current_timing_start)
+            .await
+    }
+
+    fn add_timing(&mut self, timing: Timing, now: DateTime<Utc>) {
         let duration = timing.end - timing.start;
 
         if duration < self.minimum_timing {
@@ -53,6 +88,7 @@ impl TimingsRecorder {
 
         if duration.num_seconds() > 0 {
             log::trace!("Adding timing: {:?}", timing);
+            self.totals_cache.add_timing(timing.clone(), now);
             self.unwritten_timings.push(timing);
         } else {
             log::warn!(
@@ -111,12 +147,15 @@ impl TimingsRecording for TimingsRecorder {
 
         // If there is a current timing, finalize it
         if let Some(current) = &self.current_timing {
-            self.add_timing(Timing {
-                client: current.client.clone(),
-                project: current.project.clone(),
-                start: current.start,
-                end: now,
-            });
+            self.add_timing(
+                Timing {
+                    client: current.client.clone(),
+                    project: current.project.clone(),
+                    start: current.start,
+                    end: now,
+                },
+                now,
+            );
             self.current_timing = None;
         } else {
             // Old implementation threw an error here
@@ -143,7 +182,7 @@ impl TimingsRecording for TimingsRecorder {
             };
             current.start = now;
 
-            self.add_timing(timing);
+            self.add_timing(timing, now);
         }
 
         log::trace!("Keep alive at {:?}", now);
