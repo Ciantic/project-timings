@@ -102,7 +102,9 @@ impl TimingsRecorder {
 }
 
 impl TimingsRecording for TimingsRecorder {
-    fn start_timing(&mut self, client: String, project: String, now: DateTime<Utc>) -> () {
+    fn start_timing(&mut self, client: String, project: String, now: DateTime<Utc>) -> bool {
+        let client = client.trim();
+        let project = project.trim();
         log::trace!(
             "Starting timing for client={}, project={} at {:?}",
             client,
@@ -111,22 +113,20 @@ impl TimingsRecording for TimingsRecorder {
         );
 
         self.keep_alive_timing(now);
+        if (client == "") || (project == "") {
+            log::warn!(
+                "Client or Project is empty (client='{}', project='{}'), not starting timing",
+                client,
+                project
+            );
+            return false;
+        }
 
         // If client and project matches current timing, do nothing
         if let Some(current) = &self.current_timing {
-            // There is already a timing going on, should we raise error? Old implementation
-            // threw an error
-
-            // log::warn!(
-            //     "There is already a timing going on: {:?}, requested: client={},
-            // project={}",     current,
-            //     client,
-            //     project
-            // );
-
             // If same client and project, do nothing, other wise stop current timing
             if current.client == client && current.project == project {
-                return ();
+                return false;
             } else {
                 // Stop current timing
                 self.stop_timing(now);
@@ -134,10 +134,11 @@ impl TimingsRecording for TimingsRecorder {
         }
 
         self.current_timing = Some(CurrentTiming {
-            client,
-            project,
+            client: client.to_string(),
+            project: project.to_string(),
             start: now,
         });
+        return true;
     }
 
     fn stop_timing(&mut self, now: DateTime<Utc>) -> () {

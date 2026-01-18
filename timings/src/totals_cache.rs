@@ -27,7 +27,7 @@ impl DailyTotals {
         let (date, duration) = {
             let local_start = start.with_timezone(&chrono::Local);
             let local_end = end.with_timezone(&chrono::Local);
-            let date = local_start.naive_local().date();
+            let date = local_start.date_naive();
             let duration = local_end - local_start;
             (date, duration)
         };
@@ -75,7 +75,7 @@ impl DailyTotals {
         // calculations
 
         // Convert now to local date for calculations
-        let today = now.naive_local().date();
+        let today = now.with_timezone(&chrono::Local).date_naive();
 
         // Calculate day total (today)
         let day = self
@@ -230,5 +230,17 @@ impl TotalsCache {
             Some(start) => Ok(totals.with_current_timing(start, now)),
             None => Ok(totals),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn test_something() {
+        let now = chrono::Utc::now();
+        let result = now.with_timezone(&chrono::Local).date_naive();
+        println!("Result: {}", result);
+        println!("Type: NaiveDate");
+        println!("Full debug: {:?}", result);
     }
 }

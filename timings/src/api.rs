@@ -88,7 +88,7 @@ pub trait TimingsMutations {
 #[allow(async_fn_in_trait)]
 pub trait TimingsRecording {
     /// Starts a new timing for the given client and project at the given time.
-    fn start_timing(&mut self, client: String, project: String, now: DateTime<Utc>) -> ();
+    fn start_timing(&mut self, client: String, project: String, now: DateTime<Utc>) -> bool;
 
     /// Stops the current timing at the given time.
     fn stop_timing(&mut self, now: DateTime<Utc>) -> ();

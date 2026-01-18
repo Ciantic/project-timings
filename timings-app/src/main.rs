@@ -320,11 +320,19 @@ impl TimingsApp {
                 old_client,
                 old_project
             );
-            self.timings_recorder
-                .start_timing(client.clone(), project.clone(), chrono::Utc::now());
-            self.is_running = true;
-            self.tray_icon.set_icon(&self.green_icon).ok();
+            if self.timings_recorder.start_timing(
+                client.clone(),
+                project.clone(),
+                chrono::Utc::now(),
+            ) {
+                self.is_running = true;
+                self.tray_icon.set_icon(&self.green_icon).ok();
+            } else {
+                self.is_running = false;
+                self.tray_icon.set_icon(&self.red_icon).ok();
+            }
             self.sender.send(AppMessage::RequestRender).ok();
+
             true
         } else {
             log::warn!(
@@ -515,11 +523,6 @@ impl TimingsApp {
     }
 
     fn update_desktop_name_from_gui(&mut self) {
-        if self.gui_client.is_empty() || self.gui_project.is_empty() {
-            log::warn!("Client or Project is empty, not updating desktop name");
-            return;
-        }
-
         let desktop_name = format!("{}: {}", self.gui_client, self.gui_project);
         log::info!("Updating desktop name to: {}", desktop_name);
         if let Err(e) =
@@ -861,8 +864,12 @@ pub fn make_layer_surface(app: &mut Application) -> EguiSurfaceState<LayerSurfac
         first_monitor.as_ref(),
     );
     layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
+    #[cfg(debug_assertions)]
+    layer_surface.set_anchor(Anchor::BOTTOM | Anchor::RIGHT);
+    #[cfg(not(debug_assertions))]
     layer_surface.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
-    layer_surface.set_margin(0, 0, 20, 20);
+
+    layer_surface.set_margin(0, 20, 20, 20);
     layer_surface.set_size(350, 200);
     layer_surface.commit();
     EguiSurfaceState::new(&app, layer_surface, 350, 200)
