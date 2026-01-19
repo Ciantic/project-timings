@@ -193,8 +193,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     AppMessage::UserResumed => {
                         log::trace!("User activity changed to resumed");
-                        let _ = timings_app.update_totals().await;
                         timings_app.resume_timing();
+                        let _ = timings_app.update_totals().await;
+                        timings_app.request_gui_frame(&mut app);
                     }
                     AppMessage::VirtualDesktopThreadExited => {
                         log::warn!(
