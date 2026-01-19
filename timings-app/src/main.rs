@@ -760,9 +760,9 @@ fn spawn_stdin_reader(app_message_sender: tokio::sync::mpsc::UnboundedSender<App
 
 /// Spawns a thread that sends WriteTimings message every 3 minutes
 fn spawn_write_timings_thread(app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>) {
-    thread::spawn(move || {
+    tokio::spawn(async move {
         loop {
-            thread::sleep(std::time::Duration::from_secs(3 * 60));
+            tokio::time::sleep(tokio::time::Duration::from_secs(3 * 60)).await;
             if app_message_sender.send(AppMessage::WriteTimings).is_err() {
                 // Main thread has exited, stop the loop
                 break;
@@ -773,9 +773,9 @@ fn spawn_write_timings_thread(app_message_sender: tokio::sync::mpsc::UnboundedSe
 
 /// Spawns a thread that sends a tick message every second
 fn spawn_keepalive_thread(app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>) {
-    thread::spawn(move || {
+    tokio::spawn(async move {
         loop {
-            thread::sleep(std::time::Duration::from_secs(30));
+            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
             if app_message_sender.send(AppMessage::KeepAlive).is_err() {
                 // Main thread has exited, stop the loop
                 break;
@@ -785,9 +785,9 @@ fn spawn_keepalive_thread(app_message_sender: tokio::sync::mpsc::UnboundedSender
 }
 /// Spawns a thread that sends KeepAlive message every 30 seconds
 fn spawn_update_totals_thread(app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>) {
-    thread::spawn(move || {
+    tokio::spawn(async move {
         loop {
-            thread::sleep(std::time::Duration::from_secs(1));
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             if app_message_sender.send(AppMessage::UpdateTotals).is_err() {
                 // Main thread has exited, stop the loop
                 break;
