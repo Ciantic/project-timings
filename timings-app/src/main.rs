@@ -79,6 +79,7 @@ enum AppMessage {
     UserResumed,
     AnotherInstanceTriedToStart,
     RequestRender,
+    WaylandEventsReady,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -129,25 +130,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut app = Application::new();
     let mut event_queue = app.event_queue.take().unwrap();
+
+    spawn_wayland_reader_thread(app.conn.clone(), appmsg_sender.clone());
+
     loop {
         select! {
-            // Wait for Wayland events in a blocking task, then dispatch them
-            _ = tokio::task::spawn_blocking({
-                let conn = app.conn.clone();
-                move || {
-                    if let Some(guard) = conn.prepare_read() {
-                        guard.read_without_dispatch().unwrap();
-                    }
-                }
-            }) => {
-                let _ = event_queue.dispatch_pending(&mut app);
-                let events = app.take_wayland_events();
-                timings_app.handle_gui_events(&mut app, &events);
-            }
-
             // Other app events
             Some(event) = appmsgs.recv() => {
                 match event {
+                    AppMessage::WaylandEventsReady => {
+                        let _ = event_queue.dispatch_pending(&mut app);
+                        let events = app.take_wayland_events();
+                        timings_app.handle_gui_events(&mut app, &events);
+                    }
                     AppMessage::Exit => {
                         break Ok(());
                     }
@@ -193,8 +188,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     AppMessage::UserResumed => {
                         log::trace!("User activity changed to resumed");
-                        let _ = timings_app.update_totals().await;
                         timings_app.resume_timing();
+                        let _ = timings_app.update_totals().await;
+                        timings_app.request_gui_frame(&mut app);
                     }
                     AppMessage::VirtualDesktopThreadExited => {
                         log::warn!(
@@ -828,6 +824,29 @@ fn spawn_idle_monitor_thread(
             }
             Err(_) => {
                 log::error!("Idle monitor thread panic");
+            }
+        }
+    });
+}
+
+/// Spawns a dedicated thread for reading Wayland events
+fn spawn_wayland_reader_thread(
+    conn: smithay_client_toolkit::reexports::client::Connection,
+    app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>,
+) {
+    thread::spawn(move || {
+        loop {
+            if let Some(guard) = conn.prepare_read() {
+                if let Err(er) = guard.read_without_dispatch() {
+                    log::error!("Wayland read error: {}", er);
+                }
+            }
+            if app_message_sender
+                .send(AppMessage::WaylandEventsReady)
+                .is_err()
+            {
+                // Main thread has exited, stop the loop
+                break;
             }
         }
     });
