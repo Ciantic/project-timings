@@ -377,6 +377,7 @@ impl TimingsApp {
             self.timings_recorder
                 .start_timing(client.clone(), project.clone(), chrono::Utc::now());
             self.is_running = true;
+            self.tray_icon.set_icon(&self.green_icon).ok();
         }
     }
 
