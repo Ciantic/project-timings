@@ -289,3 +289,91 @@ async fn test_write_timings_respects_minimum_for_running_timing()
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_start_timing_with_empty_client_stops_current_timing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pool = setup_test_db().await?;
+    let mut conn = pool.acquire().await?;
+
+    let mut recorder = TimingsRecorder::new(Duration::zero());
+    let start_time = Utc.with_ymd_and_hms(2020, 5, 5, 12, 0, 0).unwrap();
+
+    // Start a timing
+    recorder.start_timing("client1".to_string(), "project1".to_string(), start_time);
+
+    // Try to start a timing with empty client - should stop the current timing
+    let result = recorder.start_timing(
+        "".to_string(),
+        "project2".to_string(),
+        start_time + Duration::seconds(30),
+    );
+
+    assert_eq!(
+        result, false,
+        "start_timing with empty client should return false"
+    );
+
+    // Write to database
+    recorder
+        .write_timings(&mut *conn, start_time + Duration::seconds(40))
+        .await?;
+
+    // Verify that the first timing was stopped and saved
+    let timings = conn.get_timings(None).await?;
+    assert_eq!(timings.len(), 1, "Should have one timing saved");
+    assert_eq!(timings[0].client, "client1");
+    assert_eq!(timings[0].project, "project1");
+    assert_eq!(timings[0].start, start_time);
+    assert_eq!(
+        timings[0].end,
+        start_time + Duration::seconds(30),
+        "Timing should be stopped at the point where empty client was attempted"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_start_timing_with_empty_project_stops_current_timing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pool = setup_test_db().await?;
+    let mut conn = pool.acquire().await?;
+
+    let mut recorder = TimingsRecorder::new(Duration::zero());
+    let start_time = Utc.with_ymd_and_hms(2020, 5, 5, 12, 0, 0).unwrap();
+
+    // Start a timing
+    recorder.start_timing("client1".to_string(), "project1".to_string(), start_time);
+
+    // Try to start a timing with empty project - should stop the current timing
+    let result = recorder.start_timing(
+        "client2".to_string(),
+        "".to_string(),
+        start_time + Duration::seconds(30),
+    );
+
+    assert_eq!(
+        result, false,
+        "start_timing with empty project should return false"
+    );
+
+    // Write to database
+    recorder
+        .write_timings(&mut *conn, start_time + Duration::seconds(40))
+        .await?;
+
+    // Verify that the first timing was stopped and saved
+    let timings = conn.get_timings(None).await?;
+    assert_eq!(timings.len(), 1, "Should have one timing saved");
+    assert_eq!(timings[0].client, "client1");
+    assert_eq!(timings[0].project, "project1");
+    assert_eq!(timings[0].start, start_time);
+    assert_eq!(
+        timings[0].end,
+        start_time + Duration::seconds(30),
+        "Timing should be stopped at the point where empty project was attempted"
+    );
+
+    Ok(())
+}

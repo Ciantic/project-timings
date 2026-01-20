@@ -119,6 +119,8 @@ impl TimingsRecording for TimingsRecorder {
                 client,
                 project
             );
+            // Stop current timing
+            self.stop_timing(now);
             return false;
         }
 
@@ -147,7 +149,7 @@ impl TimingsRecording for TimingsRecorder {
         self.keep_alive_timing(now);
 
         // If there is a current timing, finalize it
-        if let Some(current) = &self.current_timing {
+        if let Some(current) = self.current_timing.take() {
             self.add_timing(
                 Timing {
                     client: current.client.clone(),
@@ -157,7 +159,6 @@ impl TimingsRecording for TimingsRecorder {
                 },
                 now,
             );
-            self.current_timing = None;
         } else {
             // Old implementation threw an error here
             log::warn!("No current timing to stop at {:?}", now);
