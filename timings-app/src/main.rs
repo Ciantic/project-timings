@@ -7,6 +7,7 @@ use futures::StreamExt;
 use idle_monitor::run_idle_monitor;
 use log::trace;
 use single_instance::only_single_instance;
+use smithay_client_toolkit::reexports::client::Connection;
 use smithay_client_toolkit::seat::pointer::PointerEventKind;
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::Anchor;
@@ -19,10 +20,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Mutex;
+use std::sync::mpsc::Sender;
 use std::thread;
 use timings::TimingsMutations;
 use timings::TimingsRecording;
-use tokio::select;
 use tokio::sync::mpsc::UnboundedSender;
 use trayicon::Icon;
 use trayicon::MenuBuilder;
@@ -66,6 +67,7 @@ struct Cli {
 
 #[derive(Debug, PartialEq, Clone)]
 enum AppMessage {
+    WaylandDispatch,
     Exit,
     WriteTimings,
     KeepAlive,
@@ -82,6 +84,7 @@ enum AppMessage {
 }
 
 #[tokio::main(flavor = "current_thread")]
+#[hotpath::main(percentiles = [100])]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(debug_assertions)]
     env_logger::Builder::from_env(
@@ -120,104 +123,94 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize timing for the current desktop
     timings_app.start_timing().await?;
 
+    let mut app = Application::new();
     spawn_idle_monitor_thread(appmsg_sender.clone(), cli.idle_timeout);
     spawn_stdin_reader(appmsg_sender.clone());
     spawn_write_timings_thread(appmsg_sender.clone());
     spawn_keepalive_thread(appmsg_sender.clone());
     spawn_virtual_desktop_listener(desktop_controller.clone(), appmsg_sender.clone());
     spawn_update_totals_thread(appmsg_sender.clone());
-
-    let mut app = Application::new();
+    let count_sender = spawn_wayland_lock_loop(appmsg_sender, app.conn.clone());
     let mut event_queue = app.event_queue.take().unwrap();
     loop {
-        select! {
-            // Wait for Wayland events in a blocking task, then dispatch them
-            _ = tokio::task::spawn_blocking({
-                let conn = app.conn.clone();
-                move || {
-                    if let Some(guard) = conn.prepare_read() {
-                        guard.read_without_dispatch().unwrap();
+        // Other app events
+        if let Some(event) = appmsgs.recv().await {
+            match event {
+                AppMessage::WaylandDispatch => {
+                    let count = event_queue.dispatch_pending(&mut app).unwrap();
+                    let events = app.take_wayland_events();
+                    timings_app.handle_gui_events(&mut app, &events);
+                    let _ = count_sender.send(count);
+                }
+                AppMessage::Exit => {
+                    break Ok(());
+                }
+                AppMessage::WriteTimings => {
+                    if let Err(e) = timings_app.write_timings().await {
+                        log::error!("Failed to write timings: {}", e);
                     }
                 }
-            }) => {
-                let _ = event_queue.dispatch_pending(&mut app);
-                let events = app.take_wayland_events();
-                timings_app.handle_gui_events(&mut app, &events);
-            }
-
-            // Other app events
-            Some(event) = appmsgs.recv() => {
-                match event {
-                    AppMessage::Exit => {
-                        break Ok(());
+                AppMessage::KeepAlive => {
+                    log::trace!("Keep alive timing");
+                    timings_app.keep_alive();
+                }
+                AppMessage::ShowDailyTotals => {
+                    if let Err(e) = timings_app.show_daily_totals().await {
+                        log::error!("Failed to show daily totals: {}", e);
                     }
-                    AppMessage::WriteTimings => {
-                        if let Err(e) = timings_app.write_timings().await {
-                            log::error!("Failed to write timings: {}", e);
+                }
+                AppMessage::TrayIconClicked => {
+                    timings_app.update_totals().await;
+                    timings_app.show_gui(&mut app);
+                }
+                AppMessage::VirtualDesktop(vd_msg) => match vd_msg {
+                    VirtualDesktopMessage::DesktopNameChanged(id, name) => {
+                        let current_desktop = desktop_controller.get_current_desktop().await?;
+                        if id == current_desktop {
+                            timings_app.start_timing_from_desktop_name(&name);
+                            timings_app.update_totals().await;
                         }
                     }
-                    AppMessage::KeepAlive => {
-                        log::trace!("Keep alive timing");
-                        timings_app.keep_alive();
-                    }
-                    AppMessage::ShowDailyTotals => {
-                        if let Err(e) = timings_app.show_daily_totals().await {
-                            log::error!("Failed to show daily totals: {}", e);
-                        }
-                    }
-                    AppMessage::TrayIconClicked => {
+                    VirtualDesktopMessage::DesktopChange(id) => {
+                        let name = desktop_controller
+                            .get_desktop_name(&id)
+                            .await
+                            .unwrap_or_else(|_| "Unknown".to_string());
+                        timings_app.start_timing_from_desktop_name(&name);
                         timings_app.update_totals().await;
                         timings_app.show_gui(&mut app);
                     }
-                    AppMessage::VirtualDesktop(vd_msg) => match vd_msg {
-                        VirtualDesktopMessage::DesktopNameChanged(id, name) => {
-                            let current_desktop = desktop_controller.get_current_desktop().await?;
-                            if id == current_desktop {
-                                timings_app.start_timing_from_desktop_name(&name);
-                                timings_app.update_totals().await;
-                            }
-                        }
-                        VirtualDesktopMessage::DesktopChange(id) => {
-                            let name = desktop_controller
-                                .get_desktop_name(&id)
-                                .await
-                                .unwrap_or_else(|_| "Unknown".to_string());
-                            timings_app.start_timing_from_desktop_name(&name);
-                            timings_app.update_totals().await;
-                            timings_app.show_gui(&mut app);
-                        }
-                    },
-                    AppMessage::UserIdled => {
-                        log::trace!("User activity changed to idling");
-                        timings_app.stop_timing();
-                    }
-                    AppMessage::UserResumed => {
-                        log::trace!("User activity changed to resumed");
-                        timings_app.resume_timing();
-                        let _ = timings_app.update_totals().await;
-                        timings_app.request_gui_frame(&mut app);
-                    }
-                    AppMessage::VirtualDesktopThreadExited => {
-                        log::warn!(
-                            "Virtual desktop listener thread has exited, this happens if the D-Bus \
-                            connection is lost for instance when user closes the desktop but not the \
-                            application."
-                        );
-                        break Err("Virtual desktop listener thread has exited".into());
-                    }
-                    AppMessage::AnotherInstanceTriedToStart => {
-                        log::info!("Another instance tried to start");
-                    }
-                    AppMessage::HideLayerOverlay => {
-                        timings_app.hide_gui();
-                    }
-                    AppMessage::RequestRender => {
-                        timings_app.request_gui_frame(&mut app);
-                    }
-                    AppMessage::UpdateTotals => {
-                        let _ = timings_app.update_totals().await;
-                        timings_app.request_gui_frame(&mut app);
-                    }
+                },
+                AppMessage::UserIdled => {
+                    log::trace!("User activity changed to idling");
+                    timings_app.stop_timing();
+                }
+                AppMessage::UserResumed => {
+                    log::trace!("User activity changed to resumed");
+                    timings_app.resume_timing();
+                    let _ = timings_app.update_totals().await;
+                    timings_app.request_gui_frame(&mut app);
+                }
+                AppMessage::VirtualDesktopThreadExited => {
+                    log::warn!(
+                        "Virtual desktop listener thread has exited, this happens if the D-Bus \
+                         connection is lost for instance when user closes the desktop but not the \
+                         application."
+                    );
+                    break Err("Virtual desktop listener thread has exited".into());
+                }
+                AppMessage::AnotherInstanceTriedToStart => {
+                    log::info!("Another instance tried to start");
+                }
+                AppMessage::HideLayerOverlay => {
+                    timings_app.hide_gui();
+                }
+                AppMessage::RequestRender => {
+                    timings_app.request_gui_frame(&mut app);
+                }
+                AppMessage::UpdateTotals => {
+                    let _ = timings_app.update_totals().await;
+                    timings_app.request_gui_frame(&mut app);
                 }
             }
         }
@@ -701,6 +694,34 @@ async fn handle_database_path(path: &str) -> Result<String, Box<dyn std::error::
     let expanded = expanded.canonicalize()?;
 
     Ok(expanded.to_string_lossy().to_string())
+}
+
+fn spawn_wayland_lock_loop(sender: UnboundedSender<AppMessage>, conn: Connection) -> Sender<usize> {
+    // Initial trigger
+    sender.send(AppMessage::WaylandDispatch).unwrap();
+
+    let (count_sender, count_reader) = std::sync::mpsc::channel::<usize>();
+    std::thread::spawn(move || {
+        loop {
+            // See `EventQueue::blocking_dispatch` implementation
+            let count = count_reader.recv().unwrap();
+            if count > 0 {
+                let _ = sender.send(AppMessage::WaylandDispatch);
+                continue;
+            }
+            conn.flush().unwrap();
+
+            // This function execution can take sometimes seconds (if no events are coming)
+            if let Some(guard) = conn.prepare_read() {
+                guard.read_without_dispatch().unwrap();
+            } else {
+                // Goal is that this branch is never or very seldomly hit
+                println!("♦️♦️♦️♦️♦️ Failed to read");
+            }
+            let _ = sender.send(AppMessage::WaylandDispatch);
+        }
+    });
+    count_sender
 }
 
 /// Spawns a task that listens to virtual desktop messages and forwards them to

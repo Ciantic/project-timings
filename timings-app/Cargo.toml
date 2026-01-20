@@ -23,3 +23,9 @@ futures = "0.3.31"
 chrono = { version = "0.4", features = ["serde"] }
 log = "0.4.29"
 env_logger = "0.11"
+
+# Debugging and profiling
+hotpath = "0.9"
+
+[features]
+hotpath = ["hotpath/hotpath", "hotpath/hotpath-alloc"]
