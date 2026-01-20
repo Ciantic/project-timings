@@ -176,7 +176,7 @@ impl TotalsCache {
     }
 
     /// Add a timing to the cache and update cached totals
-    pub fn add_timing(&mut self, timing: Timing, now: DateTime<Utc>) {
+    pub fn add_timing(&mut self, timing: Timing) {
         // Add to existing totals only
         if let Some(totals) = self
             .totals

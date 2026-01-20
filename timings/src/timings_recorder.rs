@@ -5,7 +5,6 @@ use crate::TimingsQueries;
 use crate::Totals;
 use crate::TotalsCache;
 use crate::api::TimingsRecording;
-use crate::totals_cache;
 use chrono::DateTime;
 use chrono::Duration;
 use chrono::Utc;
@@ -72,7 +71,7 @@ impl TimingsRecorder {
             .await
     }
 
-    fn add_timing(&mut self, timing: Timing, now: DateTime<Utc>) {
+    fn add_timing(&mut self, timing: Timing) {
         let duration = timing.end - timing.start;
 
         if duration < self.minimum_timing {
@@ -88,7 +87,7 @@ impl TimingsRecorder {
 
         if duration.num_seconds() > 0 {
             log::trace!("Adding timing: {:?}", timing);
-            self.totals_cache.add_timing(timing.clone(), now);
+            self.totals_cache.add_timing(timing.clone());
             self.unwritten_timings.push(timing);
         } else {
             log::warn!(
@@ -150,15 +149,12 @@ impl TimingsRecording for TimingsRecorder {
 
         // If there is a current timing, finalize it
         if let Some(current) = self.current_timing.take() {
-            self.add_timing(
-                Timing {
-                    client: current.client.clone(),
-                    project: current.project.clone(),
-                    start: current.start,
-                    end: now,
-                },
-                now,
-            );
+            self.add_timing(Timing {
+                client: current.client.clone(),
+                project: current.project.clone(),
+                start: current.start,
+                end: now,
+            });
         } else {
             // Old implementation threw an error here
             log::warn!("No current timing to stop at {:?}", now);
@@ -184,7 +180,7 @@ impl TimingsRecording for TimingsRecorder {
             };
             current.start = now;
 
-            self.add_timing(timing, now);
+            self.add_timing(timing);
         }
 
         log::trace!("Keep alive at {:?}", now);
