@@ -7,7 +7,6 @@ use futures::StreamExt;
 use idle_monitor::run_idle_monitor;
 use log::trace;
 use single_instance::only_single_instance;
-use smithay_client_toolkit::reexports::client::Connection;
 use smithay_client_toolkit::seat::pointer::PointerEventKind;
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::Anchor;
@@ -20,8 +19,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Mutex;
-use std::sync::mpsc::Sender;
 use std::thread;
+use timings::TimingsMockdata;
 use timings::TimingsMutations;
 use timings::TimingsRecording;
 use tokio::sync::mpsc::UnboundedSender;
@@ -252,6 +251,13 @@ impl TimingsApp {
         let pool = SqlitePool::connect_with(options).await?;
         let mut conn = pool.acquire().await?;
         conn.create_timings_database().await?;
+
+        // Insert mockdata in debug mode with :memory:
+        #[cfg(debug_assertions)]
+        if database == "sqlite::memory:" {
+            conn.insert_mockdata(chrono::Utc::now()).await?;
+        }
+
         drop(conn);
 
         let timings_recorder = timings::TimingsRecorder::new(minimum_timing);

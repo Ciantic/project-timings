@@ -85,6 +85,15 @@ pub trait TimingsMutations {
     ) -> Result<(), Error>;
 }
 
+/// Trait for inserting mockdata into timings database.
+///
+/// This is implemented for &mut SqliteConnection in
+/// repository/mockdata.rs
+#[allow(async_fn_in_trait)]
+pub trait TimingsMockdata {
+    async fn insert_mockdata(&mut self, now: DateTime<Utc>) -> Result<(), Error>;
+}
+
 #[allow(async_fn_in_trait)]
 pub trait TimingsRecording {
     /// Starts a new timing for the given client and project at the given time.
