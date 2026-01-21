@@ -130,17 +130,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_keepalive_thread(appmsg_sender.clone());
     spawn_virtual_desktop_listener(desktop_controller.clone(), appmsg_sender.clone());
     spawn_update_totals_thread(appmsg_sender.clone());
-    let count_sender = spawn_wayland_lock_loop(appmsg_sender, app.conn.clone());
-    let mut event_queue = app.event_queue.take().unwrap();
+    let mut dispatcher = app.run_dispatcher(move || {
+        let _ = appmsg_sender.send(AppMessage::WaylandDispatch);
+    });
     loop {
         // Other app events
         if let Some(event) = appmsgs.recv().await {
             match event {
                 AppMessage::WaylandDispatch => {
-                    let count = event_queue.dispatch_pending(&mut app).unwrap();
-                    let events = app.take_wayland_events();
+                    let events = dispatcher.dispatch_pending(&mut app);
                     timings_app.handle_gui_events(&mut app, &events);
-                    let _ = count_sender.send(count);
                 }
                 AppMessage::Exit => {
                     break Ok(());
@@ -230,6 +229,7 @@ struct TimingsApp {
     // GUI fields
     gui_client: String,
     gui_project: String,
+    gui_summary: String,
     gui_totals: HashMap<(String, String), timings::Totals>,
     has_keyboard_focus: bool,
     egui_surface_state: Option<EguiSurfaceState<LayerSurface>>,
@@ -284,6 +284,7 @@ impl TimingsApp {
             gui_totals: HashMap::new(),
             gui_client: String::new(),
             gui_project: String::new(),
+            gui_summary: String::new(),
             has_keyboard_focus: false,
             egui_surface_state: None,
             is_running: false,
@@ -550,6 +551,7 @@ impl TimingsApp {
             )
             .show(ctx, |ui| {
                 ui.vertical(|ui| {
+                    // Client text field
                     ui.add(
                         egui::TextEdit::singleline(&mut self.gui_client)
                             .desired_width(f32::INFINITY)
@@ -558,15 +560,25 @@ impl TimingsApp {
                             .font(egui::FontId::new(20.0, egui::FontFamily::Proportional)),
                     );
                     ui.add_space(5.0);
-                    let resp = ui.add(
+                    // Project text field
+                    ui.add(
                         egui::TextEdit::singleline(&mut self.gui_project)
                             .desired_width(f32::INFINITY)
                             .horizontal_align(egui::Align::Center)
                             .background_color(Color32::from_white_alpha(0))
                             .font(egui::FontId::new(20.0, egui::FontFamily::Proportional)),
                     );
+                    ui.add_space(5.0);
+                    // Summary text field
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.gui_summary)
+                            .desired_width(f32::INFINITY)
+                            .horizontal_align(egui::Align::Center)
+                            .background_color(Color32::from_white_alpha(0))
+                            .font(egui::FontId::new(13.0, egui::FontFamily::Proportional)),
+                    );
 
-                    if resp.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
                         // println!("Updating desktop name from GUI");
                         self.update_desktop_name_from_gui();
                     }
@@ -585,7 +597,7 @@ impl TimingsApp {
 
                 ui.vertical_centered(|ui| {
                     ui.set_max_width(150.0);
-                    ui.set_max_height(65.0);
+                    ui.set_max_height(45.0);
                     ui.horizontal_centered(|ui| {
                         let circle_color = if self.is_running {
                             egui::Color32::GREEN
@@ -694,34 +706,6 @@ async fn handle_database_path(path: &str) -> Result<String, Box<dyn std::error::
     let expanded = expanded.canonicalize()?;
 
     Ok(expanded.to_string_lossy().to_string())
-}
-
-fn spawn_wayland_lock_loop(sender: UnboundedSender<AppMessage>, conn: Connection) -> Sender<usize> {
-    // Initial trigger
-    sender.send(AppMessage::WaylandDispatch).unwrap();
-
-    let (count_sender, count_reader) = std::sync::mpsc::channel::<usize>();
-    std::thread::spawn(move || {
-        loop {
-            // See `EventQueue::blocking_dispatch` implementation
-            let count = count_reader.recv().unwrap();
-            if count > 0 {
-                let _ = sender.send(AppMessage::WaylandDispatch);
-                continue;
-            }
-            conn.flush().unwrap();
-
-            // This function execution can take sometimes seconds (if no events are coming)
-            if let Some(guard) = conn.prepare_read() {
-                guard.read_without_dispatch().unwrap();
-            } else {
-                // Goal is that this branch is never or very seldomly hit
-                println!("♦️♦️♦️♦️♦️ Failed to read");
-            }
-            let _ = sender.send(AppMessage::WaylandDispatch);
-        }
-    });
-    count_sender
 }
 
 /// Spawns a task that listens to virtual desktop messages and forwards them to
