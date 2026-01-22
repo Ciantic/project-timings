@@ -33,6 +33,8 @@ use virtual_desktops::VirtualDesktopMessage;
 use wayapp::Application;
 use wayapp::EguiSurfaceState;
 use wayapp::WaylandEvent;
+mod utils;
+use utils::*;
 
 const DEFAULT_DATABASE: &str = "~/.config/timings/timings.db";
 const ICON_GREEN: &[u8] = include_bytes!("../resources/green.ico");
@@ -228,8 +230,8 @@ struct TimingsApp {
     // GUI fields
     gui_client: String,
     gui_project: String,
-    gui_summary: String,
     gui_totals: HashMap<(String, String), timings::Totals>,
+    gui_summaries: HashMap<(String, String), String>,
     has_keyboard_focus: bool,
     egui_surface_state: Option<EguiSurfaceState<LayerSurface>>,
 
@@ -290,7 +292,7 @@ impl TimingsApp {
             gui_totals: HashMap::new(),
             gui_client: String::new(),
             gui_project: String::new(),
-            gui_summary: String::new(),
+            gui_summaries: HashMap::new(),
             has_keyboard_focus: false,
             egui_surface_state: None,
             is_running: false,
@@ -308,10 +310,10 @@ impl TimingsApp {
         let (client, project) = Self::parse_desktop_name(desktop_name);
         let old_client = self.client.clone();
         let old_project = self.project.clone();
-        self.client = client.clone();
-        self.project = project.clone();
-        self.gui_client = client.clone().unwrap_or_default();
-        self.gui_project = project.clone().unwrap_or_default();
+        self.client = client.clone().map(|s| s.trim().to_string());
+        self.project = project.clone().map(|s| s.trim().to_string());
+        self.gui_client = self.client.clone().unwrap_or_default();
+        self.gui_project = self.project.clone().unwrap_or_default();
 
         if let (Some(client), Some(project)) = (client, project) {
             log::info!(
@@ -476,7 +478,31 @@ impl TimingsApp {
         if self.egui_surface_state.is_some() {
             return;
         }
-        self.egui_surface_state = Some(make_layer_surface(app));
+        self.egui_surface_state = {
+            let first_monitor = app
+                .output_state
+                .outputs()
+                .collect::<Vec<_>>()
+                .get(0)
+                .cloned();
+            let layer_surface = app.layer_shell.create_layer_surface(
+                &app.qh,
+                app.compositor_state.create_surface(&app.qh),
+                Layer::Top,
+                Some("ProjectTimings"),
+                first_monitor.as_ref(),
+            );
+            layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
+            #[cfg(debug_assertions)]
+            layer_surface.set_anchor(Anchor::BOTTOM | Anchor::RIGHT);
+            #[cfg(not(debug_assertions))]
+            layer_surface.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
+
+            layer_surface.set_margin(0, 20, 20, 20);
+            layer_surface.set_size(350, 200);
+            layer_surface.commit();
+            Some(EguiSurfaceState::new(&app, layer_surface, 350, 200))
+        };
         self.request_gui_frame(app);
     }
 
@@ -528,7 +554,7 @@ impl TimingsApp {
     }
 
     fn update_desktop_name_from_gui(&mut self) {
-        let desktop_name = format!("{}: {}", self.gui_client, self.gui_project);
+        let desktop_name = format!("{}: {}", self.gui_client.trim(), self.gui_project.trim());
         log::info!("Updating desktop name to: {}", desktop_name);
         if let Err(e) =
             futures::executor::block_on(self.desktop_controller.update_desktop_name(&desktop_name))
@@ -537,9 +563,22 @@ impl TimingsApp {
         }
     }
 
+    fn update_summary_from_gui(&mut self) {
+        let client = self.gui_client.trim();
+        let project = self.gui_project.trim();
+        let summary = self
+            .gui_summaries
+            .get(&(client.to_string(), project.to_string()))
+            .map(|s| s.trim())
+            .unwrap_or("");
+        println!("Updating timing summary to: {}", summary);
+    }
+
     fn overlay_ui(&mut self, ctx: &Context) {
         ctx.set_visuals(egui::Visuals::light());
         let bg_color = ctx.style().visuals.panel_fill;
+        let client = self.gui_client.trim().to_string();
+        let project = self.gui_project.trim().to_string();
 
         CentralPanel::default()
             .frame(
@@ -558,31 +597,44 @@ impl TimingsApp {
             .show(ctx, |ui| {
                 ui.vertical(|ui| {
                     // Client text field
-                    ui.add(
+                    let client_input = ui.add(
                         egui::TextEdit::singleline(&mut self.gui_client)
                             .desired_width(f32::INFINITY)
                             .horizontal_align(egui::Align::Center)
                             .background_color(Color32::from_white_alpha(0))
                             .font(egui::FontId::new(20.0, egui::FontFamily::Proportional)),
                     );
+
                     ui.add_space(5.0);
+
                     // Project text field
-                    ui.add(
+                    let project_input = ui.add(
                         egui::TextEdit::singleline(&mut self.gui_project)
                             .desired_width(f32::INFINITY)
                             .horizontal_align(egui::Align::Center)
                             .background_color(Color32::from_white_alpha(0))
                             .font(egui::FontId::new(20.0, egui::FontFamily::Proportional)),
                     );
+
                     ui.add_space(5.0);
+
                     // Summary text field
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.gui_summary)
-                            .desired_width(f32::INFINITY)
-                            .horizontal_align(egui::Align::Center)
-                            .background_color(Color32::from_white_alpha(0))
-                            .font(egui::FontId::new(13.0, egui::FontFamily::Proportional)),
+                    let summary_input = ui.add(
+                        egui::TextEdit::singleline(
+                            self.gui_summaries
+                                .entry((client.to_string(), project.to_string()))
+                                .or_insert_with(String::new),
+                        )
+                        .desired_width(f32::INFINITY)
+                        .horizontal_align(egui::Align::Center)
+                        .background_color(Color32::from_white_alpha(0))
+                        .font(egui::FontId::new(13.0, egui::FontFamily::Proportional)),
                     );
+
+                    // When typing to summary, call update_summary_from_gui
+                    if summary_input.changed() {
+                        self.update_summary_from_gui();
+                    }
 
                     if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
                         // println!("Updating desktop name from GUI");
@@ -863,32 +915,6 @@ fn hide_overlay_after_delay(
         tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
         let _ = sender.send(AppMessage::HideLayerOverlay);
     }));
-}
-
-pub fn make_layer_surface(app: &mut Application) -> EguiSurfaceState<LayerSurface> {
-    let first_monitor = app
-        .output_state
-        .outputs()
-        .collect::<Vec<_>>()
-        .get(0)
-        .cloned();
-    let layer_surface = app.layer_shell.create_layer_surface(
-        &app.qh,
-        app.compositor_state.create_surface(&app.qh),
-        Layer::Top,
-        Some("ProjectTimings"),
-        first_monitor.as_ref(),
-    );
-    layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
-    #[cfg(debug_assertions)]
-    layer_surface.set_anchor(Anchor::BOTTOM | Anchor::RIGHT);
-    #[cfg(not(debug_assertions))]
-    layer_surface.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
-
-    layer_surface.set_margin(0, 20, 20, 20);
-    layer_surface.set_size(350, 200);
-    layer_surface.commit();
-    EguiSurfaceState::new(&app, layer_surface, 350, 200)
 }
 
 fn duration_to_hh_mm_ss(duration: &chrono::Duration) -> String {
