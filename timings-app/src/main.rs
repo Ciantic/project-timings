@@ -225,7 +225,6 @@ struct TimingsApp {
     pool: SqlitePool,
     sender: UnboundedSender<AppMessage>,
     desktop_controller: KDEVirtualDesktopController,
-    is_running: bool,
 
     // GUI fields
     gui_client: String,
@@ -295,7 +294,6 @@ impl TimingsApp {
             gui_summaries: HashMap::new(),
             has_keyboard_focus: false,
             egui_surface_state: None,
-            is_running: false,
             tray_icon,
             green_icon,
             red_icon,
@@ -328,10 +326,8 @@ impl TimingsApp {
                 project.clone(),
                 chrono::Utc::now(),
             ) {
-                self.is_running = true;
                 self.tray_icon.set_icon(&self.green_icon).ok();
             } else {
-                self.is_running = false;
                 self.tray_icon.set_icon(&self.red_icon).ok();
             }
             self.sender.send(AppMessage::RequestRender).ok();
@@ -363,7 +359,6 @@ impl TimingsApp {
         log::info!("Stopping timing");
         self.timings_recorder.stop_timing(chrono::Utc::now());
         self.tray_icon.set_icon(&self.red_icon).ok();
-        self.is_running = false;
         self.sender.send(AppMessage::RequestRender).ok();
     }
 
@@ -379,7 +374,6 @@ impl TimingsApp {
 
             self.timings_recorder
                 .start_timing(client.clone(), project.clone(), chrono::Utc::now());
-            self.is_running = true;
             self.tray_icon.set_icon(&self.green_icon).ok();
         }
     }
@@ -579,6 +573,7 @@ impl TimingsApp {
         let bg_color = ctx.style().visuals.panel_fill;
         let client = self.gui_client.trim().to_string();
         let project = self.gui_project.trim().to_string();
+        let is_running = self.timings_recorder.is_running();
 
         CentralPanel::default()
             .frame(
@@ -657,7 +652,7 @@ impl TimingsApp {
                     ui.set_max_width(150.0);
                     ui.set_max_height(45.0);
                     ui.horizontal_centered(|ui| {
-                        let circle_color = if self.is_running {
+                        let circle_color = if is_running {
                             egui::Color32::GREEN
                         } else {
                             egui::Color32::RED
@@ -668,7 +663,7 @@ impl TimingsApp {
                         let center = response.rect.center();
                         painter.circle_filled(
                             center,
-                            if self.is_running { 9.5 } else { 4.0 },
+                            if is_running { 9.5 } else { 4.0 },
                             circle_color,
                         );
                         ui.label(

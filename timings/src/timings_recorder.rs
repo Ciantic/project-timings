@@ -101,6 +101,10 @@ impl TimingsRecorder {
 }
 
 impl TimingsRecording for TimingsRecorder {
+    fn is_running(&self) -> bool {
+        self.current_timing.is_some()
+    }
+
     fn start_timing(&mut self, client: String, project: String, now: DateTime<Utc>) -> bool {
         let client = client.trim();
         let project = project.trim();

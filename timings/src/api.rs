@@ -96,6 +96,9 @@ pub trait TimingsMockdata {
 
 #[allow(async_fn_in_trait)]
 pub trait TimingsRecording {
+    /// Returns true if there is a currently running timing.
+    fn is_running(&self) -> bool;
+
     /// Starts a new timing for the given client and project at the given time.
     fn start_timing(&mut self, client: String, project: String, now: DateTime<Utc>) -> bool;
 
