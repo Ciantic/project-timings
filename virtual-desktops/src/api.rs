@@ -44,7 +44,11 @@ pub trait VirtualDesktopController {
     async fn listen(&mut self) -> Result<impl Stream<Item = VirtualDesktopMessage>, Error>;
 
     /// Updates the name of the current virtual desktop.
-    async fn update_desktop_name(&mut self, desktop_name: &str) -> Result<(), Error>;
+    async fn update_desktop_name(
+        &mut self,
+        desktop_id: DesktopId,
+        desktop_name: &str,
+    ) -> Result<(), Error>;
 
     /// Gets the name of the current virtual desktop.
     async fn get_desktop_name(&self, desktop_id: &DesktopId) -> Result<String, Error>;

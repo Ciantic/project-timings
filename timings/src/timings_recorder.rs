@@ -25,6 +25,7 @@ pub struct TimingsRecorder {
     last_keep_alive: Option<DateTime<Utc>>,
     minimum_timing: Duration,
     totals_cache: TotalsCache,
+    running_changed: Option<Box<dyn Fn(bool) + Send + Sync>>,
 }
 
 impl TimingsRecorder {
@@ -40,7 +41,15 @@ impl TimingsRecorder {
             last_keep_alive: None,
             minimum_timing: min,
             totals_cache: TotalsCache::new(),
+            running_changed: None,
         }
+    }
+
+    pub fn set_running_changed_callback<F>(&mut self, callback: F)
+    where
+        F: Fn(bool) + Send + Sync + 'static,
+    {
+        self.running_changed = Some(Box::new(callback));
     }
 
     /// Get totals for a client/project, either from cache or by calculating
@@ -98,6 +107,19 @@ impl TimingsRecorder {
             );
         }
     }
+
+    fn finalize_current_timing(&mut self, now: DateTime<Utc>) {
+        // Finalize the current timing without touching keep-alive state. The caller
+        // is responsible for calling `keep_alive_timing` if needed.
+        if let Some(current) = self.current_timing.take() {
+            self.add_timing(Timing {
+                client: current.client.clone(),
+                project: current.project.clone(),
+                start: current.start,
+                end: now,
+            });
+        }
+    }
 }
 
 impl TimingsRecording for TimingsRecorder {
@@ -132,17 +154,18 @@ impl TimingsRecording for TimingsRecorder {
             // If same client and project, do nothing, other wise stop current timing
             if current.client == client && current.project == project {
                 return false;
-            } else {
-                // Stop current timing
-                self.stop_timing(now);
             }
         }
+        self.finalize_current_timing(now);
 
         self.current_timing = Some(CurrentTiming {
             client: client.to_string(),
             project: project.to_string(),
             start: now,
         });
+        if let Some(callback) = &self.running_changed {
+            callback(true);
+        }
         return true;
     }
 
@@ -150,18 +173,9 @@ impl TimingsRecording for TimingsRecorder {
         log::trace!("Stopping timing at {:?}", now);
 
         self.keep_alive_timing(now);
-
-        // If there is a current timing, finalize it
-        if let Some(current) = self.current_timing.take() {
-            self.add_timing(Timing {
-                client: current.client.clone(),
-                project: current.project.clone(),
-                start: current.start,
-                end: now,
-            });
-        } else {
-            // Old implementation threw an error here
-            log::warn!("No current timing to stop at {:?}", now);
+        self.finalize_current_timing(now);
+        if let Some(callback) = &self.running_changed {
+            callback(false);
         }
     }
 

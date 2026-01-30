@@ -1,4 +1,6 @@
 use chrono::Duration;
+use chrono::Local;
+use chrono::NaiveDate;
 use clap::Parser;
 use egui::CentralPanel;
 use egui::Color32;
@@ -20,17 +22,22 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Mutex;
 use std::thread;
+use timings::SummaryForDay;
 use timings::TimingsMockdata;
 use timings::TimingsMutations;
+use timings::TimingsQueries;
+use timings::TimingsRecorder;
 use timings::TimingsRecording;
 use tokio::sync::mpsc::UnboundedSender;
 use trayicon::Icon;
 use trayicon::MenuBuilder;
 use trayicon::TrayIconBuilder;
+use virtual_desktops::DesktopId;
 use virtual_desktops::KDEVirtualDesktopController;
 use virtual_desktops::VirtualDesktopController;
 use virtual_desktops::VirtualDesktopMessage;
 use wayapp::Application;
+use wayapp::DispatchToken;
 use wayapp::EguiSurfaceState;
 use wayapp::WaylandEvent;
 mod utils;
@@ -68,7 +75,7 @@ struct Cli {
 
 #[derive(Debug, PartialEq, Clone)]
 enum AppMessage {
-    WaylandDispatch,
+    WaylandDispatch(DispatchToken),
     Exit,
     WriteTimings,
     KeepAlive,
@@ -79,6 +86,7 @@ enum AppMessage {
     VirtualDesktopThreadExited,
     HideLayerOverlay,
     UserIdled,
+    RunningChanged(bool),
     UserResumed,
     AnotherInstanceTriedToStart,
     RequestRender,
@@ -112,10 +120,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let desktop_controller = KDEVirtualDesktopController::new().await?;
 
+    let tx = appmsg_sender.clone();
+    let mut timings_recorder =
+        timings::TimingsRecorder::new(Duration::seconds(cli.minimum_timing as i64));
+
+    timings_recorder.set_running_changed_callback(move |running| {
+        let _ = tx.send(AppMessage::RunningChanged(running));
+    });
+
     // Start the timings app
     let mut timings_app = TimingsApp::new(
         &database_path,
-        Duration::seconds(cli.minimum_timing as i64),
+        timings_recorder,
         appmsg_sender.clone(),
         &desktop_controller,
     )
@@ -124,22 +140,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize timing for the current desktop
     timings_app.start_timing().await?;
 
-    let mut app = Application::new();
+    let appmsg_sender_ = appmsg_sender.clone();
+    let mut app = Application::new(move |t| {
+        let _ = appmsg_sender_.send(AppMessage::WaylandDispatch(t));
+    });
     spawn_idle_monitor_thread(appmsg_sender.clone(), cli.idle_timeout);
     spawn_stdin_reader(appmsg_sender.clone());
     spawn_write_timings_thread(appmsg_sender.clone());
     spawn_keepalive_thread(appmsg_sender.clone());
     spawn_virtual_desktop_listener(desktop_controller.clone(), appmsg_sender.clone());
     spawn_update_totals_thread(appmsg_sender.clone());
-    let mut dispatcher = app.run_dispatcher(move || {
-        let _ = appmsg_sender.send(AppMessage::WaylandDispatch);
-    });
+    app.run_dispatcher();
     loop {
         // Other app events
         if let Some(event) = appmsgs.recv().await {
             match event {
-                AppMessage::WaylandDispatch => {
-                    let events = dispatcher.dispatch_pending(&mut app);
+                AppMessage::WaylandDispatch(token) => {
+                    let events = app.dispatch_pending(token);
                     timings_app.handle_gui_events(&mut app, &events);
                 }
                 AppMessage::Exit => {
@@ -165,8 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 AppMessage::VirtualDesktop(vd_msg) => match vd_msg {
                     VirtualDesktopMessage::DesktopNameChanged(id, name) => {
-                        let current_desktop = desktop_controller.get_current_desktop().await?;
-                        if id == current_desktop {
+                        if id == timings_app.current_desktop {
                             timings_app.start_timing_from_desktop_name(&name);
                             timings_app.update_totals().await;
                         }
@@ -176,9 +192,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .get_desktop_name(&id)
                             .await
                             .unwrap_or_else(|_| "Unknown".to_string());
+                        timings_app.current_desktop = id;
                         timings_app.start_timing_from_desktop_name(&name);
-                        timings_app.update_totals().await;
                         timings_app.show_gui(&mut app);
+                        timings_app.update_totals().await;
+                        timings_app.update_summary().await;
+                        timings_app.request_gui_frame();
                     }
                 },
                 AppMessage::UserIdled => {
@@ -189,7 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     log::trace!("User activity changed to resumed");
                     timings_app.resume_timing();
                     let _ = timings_app.update_totals().await;
-                    timings_app.request_gui_frame(&mut app);
+                    timings_app.request_gui_frame();
                 }
                 AppMessage::VirtualDesktopThreadExited => {
                     log::warn!(
@@ -206,11 +225,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     timings_app.hide_gui();
                 }
                 AppMessage::RequestRender => {
-                    timings_app.request_gui_frame(&mut app);
+                    timings_app.request_gui_frame();
                 }
                 AppMessage::UpdateTotals => {
                     let _ = timings_app.update_totals().await;
-                    timings_app.request_gui_frame(&mut app);
+                    timings_app.request_gui_frame();
+                }
+                AppMessage::RunningChanged(is_running) => {
+                    log::info!("Timings recorder running state changed: {}", is_running);
+                    let icon = if is_running {
+                        &timings_app.green_icon
+                    } else {
+                        &timings_app.red_icon
+                    };
+                    timings_app.tray_icon.set_icon(icon).ok();
+                    timings_app.request_gui_frame();
                 }
             }
         }
@@ -226,11 +255,14 @@ struct TimingsApp {
     sender: UnboundedSender<AppMessage>,
     desktop_controller: KDEVirtualDesktopController,
 
+    // Current desktop, updated on desktop change
+    current_desktop: DesktopId,
+
     // GUI fields
     gui_client: String,
     gui_project: String,
     gui_totals: HashMap<(String, String), timings::Totals>,
-    gui_summaries: HashMap<(String, String), String>,
+    gui_summaries: HashMap<(NaiveDate, String, String), String>,
     has_keyboard_focus: bool,
     egui_surface_state: Option<EguiSurfaceState<LayerSurface>>,
 
@@ -243,7 +275,7 @@ struct TimingsApp {
 impl TimingsApp {
     pub async fn new(
         database: &str,
-        minimum_timing: Duration,
+        timings_recorder: TimingsRecorder,
         sender: UnboundedSender<AppMessage>,
         desktop_controller: &KDEVirtualDesktopController,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -261,7 +293,8 @@ impl TimingsApp {
 
         drop(conn);
 
-        let timings_recorder = timings::TimingsRecorder::new(minimum_timing);
+        // Current desktop
+        let current_desktop = desktop_controller.get_current_desktop().await?;
 
         // Build tray icon
         let green_icon = Icon::from_buffer(ICON_GREEN, None, None)?;
@@ -288,6 +321,7 @@ impl TimingsApp {
             pool,
             sender,
             desktop_controller: desktop_controller.clone(),
+            current_desktop,
             gui_totals: HashMap::new(),
             gui_client: String::new(),
             gui_project: String::new(),
@@ -305,13 +339,28 @@ impl TimingsApp {
     /// If no colon is present, the entire name is used as the client.
     /// Only starts timing if both client and project can be parsed.
     fn start_timing_from_desktop_name(&mut self, desktop_name: &str) -> bool {
-        let (client, project) = Self::parse_desktop_name(desktop_name);
+        let (client, project) = parse_desktop_name(desktop_name);
         let old_client = self.client.clone();
         let old_project = self.project.clone();
         self.client = client.clone().map(|s| s.trim().to_string());
         self.project = project.clone().map(|s| s.trim().to_string());
-        self.gui_client = self.client.clone().unwrap_or_default();
-        self.gui_project = self.project.clone().unwrap_or_default();
+        if !compare_client_and_project_names(
+            &self.gui_client,
+            &self.gui_project,
+            &self.client,
+            &self.project,
+        ) {
+            self.gui_client = self.client.clone().unwrap_or_default();
+            self.gui_project = self.project.clone().unwrap_or_default();
+        }
+
+        if self.has_keyboard_focus {
+            log::info!(
+                "Not starting timing from desktop name '{}' because GUI has focus",
+                desktop_name
+            );
+            return false;
+        }
 
         if let (Some(client), Some(project)) = (client, project) {
             log::info!(
@@ -321,15 +370,8 @@ impl TimingsApp {
                 old_client,
                 old_project
             );
-            if self.timings_recorder.start_timing(
-                client.clone(),
-                project.clone(),
-                chrono::Utc::now(),
-            ) {
-                self.tray_icon.set_icon(&self.green_icon).ok();
-            } else {
-                self.tray_icon.set_icon(&self.red_icon).ok();
-            }
+            self.timings_recorder
+                .start_timing(client.clone(), project.clone(), chrono::Utc::now());
             self.sender.send(AppMessage::RequestRender).ok();
 
             true
@@ -344,10 +386,9 @@ impl TimingsApp {
     }
 
     pub async fn start_timing(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let current_desktop = self.desktop_controller.get_current_desktop().await?;
         let current_desktop_name = self
             .desktop_controller
-            .get_desktop_name(&current_desktop)
+            .get_desktop_name(&self.current_desktop)
             .await
             .unwrap_or_else(|_| "Unknown".to_string());
         self.start_timing_from_desktop_name(&current_desktop_name);
@@ -358,8 +399,6 @@ impl TimingsApp {
     pub fn stop_timing(&mut self) {
         log::info!("Stopping timing");
         self.timings_recorder.stop_timing(chrono::Utc::now());
-        self.tray_icon.set_icon(&self.red_icon).ok();
-        self.sender.send(AppMessage::RequestRender).ok();
     }
 
     pub fn resume_timing(&mut self) {
@@ -374,7 +413,46 @@ impl TimingsApp {
 
             self.timings_recorder
                 .start_timing(client.clone(), project.clone(), chrono::Utc::now());
-            self.tray_icon.set_icon(&self.green_icon).ok();
+        }
+    }
+
+    pub async fn update_summary(&mut self) {
+        if let Some(client) = self.client.as_ref()
+            && let Some(project) = self.project.as_ref()
+            && self.egui_surface_state.is_some()
+        {
+            let today = Local::now().date_naive();
+            let key = (today, client.clone(), project.clone());
+
+            // Check if summary is already cached
+            if self.gui_summaries.contains_key(&key) {
+                log::trace!("Summary already cached for {}: {}", client, project);
+                return;
+            }
+
+            log::info!("Updating summary cache for {}: {}", client, project);
+            let mut conn = self.pool.acquire().await.unwrap();
+
+            // Query the database for the summary
+            if let Ok(summaries) = conn
+                .get_timings_daily_summaries(
+                    Local,
+                    today,
+                    today,
+                    Some(client.clone()),
+                    Some(project.clone()),
+                )
+                .await
+            {
+                let summary = summaries
+                    .first()
+                    .map(|s| s.summary.clone())
+                    .unwrap_or_default();
+                self.gui_summaries.insert(key, summary);
+            } else {
+                // Cache as empty string to avoid repeated queries
+                self.gui_summaries.insert(key, String::new());
+            }
         }
     }
 
@@ -452,20 +530,6 @@ impl TimingsApp {
         Ok(())
     }
 
-    /// Parses a desktop name into client and project.
-    /// Format: "client: project" or just "client"
-    fn parse_desktop_name(desktop_name: &str) -> (Option<String>, Option<String>) {
-        let parts: Vec<&str> = desktop_name.splitn(2, ':').collect();
-        if parts.len() == 2 {
-            (
-                Some(parts[0].trim().to_string()),
-                Some(parts[1].trim().to_string()),
-            )
-        } else {
-            (Some(desktop_name.trim().to_string()), None)
-        }
-    }
-
     // GUI methods
     pub fn show_gui(&mut self, app: &mut Application) {
         hide_overlay_after_delay(self.sender.clone(), 3);
@@ -497,7 +561,7 @@ impl TimingsApp {
             layer_surface.commit();
             Some(EguiSurfaceState::new(&app, layer_surface, 350, 200))
         };
-        self.request_gui_frame(app);
+        self.request_gui_frame();
     }
 
     pub fn hide_gui(&mut self) {
@@ -521,10 +585,12 @@ impl TimingsApp {
                 WaylandEvent::KeyboardEnter(_, ..) => {
                     trace!("Overlay keyboard enter");
                     self.has_keyboard_focus = true;
+                    self.stop_timing();
                 }
                 WaylandEvent::KeyboardLeave(_, ..) => {
                     trace!("Overlay keyboard leave");
                     self.has_keyboard_focus = false;
+                    self.resume_timing();
                     hide_overlay_after_delay(self.sender.clone(), 3);
                     self.egui_surface_state.as_ref().map(|s| {
                         s.set_keyboard_interactivity(KeyboardInteractivity::None);
@@ -540,40 +606,85 @@ impl TimingsApp {
         }
     }
 
-    pub fn request_gui_frame(&mut self, app: &mut Application) {
+    pub fn request_gui_frame(&mut self) {
         if let Some(ref mut surface_state) = self.egui_surface_state {
             surface_state.request_frame();
-            let _ = app.conn.flush();
         }
     }
 
-    fn update_desktop_name_from_gui(&mut self) {
-        let desktop_name = format!("{}: {}", self.gui_client.trim(), self.gui_project.trim());
-        log::info!("Updating desktop name to: {}", desktop_name);
-        if let Err(e) =
-            futures::executor::block_on(self.desktop_controller.update_desktop_name(&desktop_name))
-        {
-            log::error!("Failed to update desktop name: {}", e);
-        }
+    fn on_gui_client_or_project_changed(&mut self) {
+        println!(
+            "GUI client or project changed: '{}' : '{}'",
+            self.gui_client, self.gui_project
+        );
+        let client = self.gui_client.trim().to_string();
+        let project = self.gui_project.trim().to_string();
+        let current_desktop = self.current_desktop.clone();
+        let mut controller = self.desktop_controller.clone();
+        run_debounced_spawn(
+            "update_client_or_project",
+            std::time::Duration::from_millis(300),
+            async move {
+                println!(
+                    "♦️ Updating desktop name from GUI to {}: {} id {}",
+                    client, project, current_desktop
+                );
+                let _ = controller
+                    .update_desktop_name(current_desktop, &format!("{}: {}", client, project))
+                    .await;
+                // Test
+            },
+        );
     }
 
-    fn update_summary_from_gui(&mut self) {
-        let client = self.gui_client.trim();
-        let project = self.gui_project.trim();
+    fn on_gui_summary_changed(&mut self) {
+        let today = Local::now().date_naive();
+        let client = self.gui_client.trim().to_string();
+        let project = self.gui_project.trim().to_string();
         let summary = self
             .gui_summaries
-            .get(&(client.to_string(), project.to_string()))
-            .map(|s| s.trim())
-            .unwrap_or("");
-        println!("Updating timing summary to: {}", summary);
+            .get(&(today, self.gui_client.clone(), self.gui_project.clone()))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        let pool = self.pool.clone();
+        run_debounced_spawn(
+            "update_summary",
+            std::time::Duration::from_millis(300),
+            async move {
+                // Test
+                println!("🥕 Updating summary from GUI");
+
+                let mut conn = pool.acquire().await.unwrap();
+                conn.insert_timings_daily_summaries(
+                    Local,
+                    &[SummaryForDay {
+                        day: Local::now().date_naive(),
+                        client: client.clone(),
+                        project: project.clone(),
+                        summary: summary,
+                        archived: false,
+                    }],
+                )
+                .await
+                .unwrap();
+            },
+        );
     }
 
     fn overlay_ui(&mut self, ctx: &Context) {
         ctx.set_visuals(egui::Visuals::light());
+        let today = Local::now().date_naive();
         let bg_color = ctx.style().visuals.panel_fill;
         let client = self.gui_client.trim().to_string();
         let project = self.gui_project.trim().to_string();
         let is_running = self.timings_recorder.is_running();
+        let totals = self
+            .gui_totals
+            .get(&(
+                self.gui_client.trim().to_string(),
+                self.gui_project.trim().to_string(),
+            ))
+            .cloned();
 
         CentralPanel::default()
             .frame(
@@ -617,7 +728,7 @@ impl TimingsApp {
                     let summary_input = ui.add(
                         egui::TextEdit::singleline(
                             self.gui_summaries
-                                .entry((client.to_string(), project.to_string()))
+                                .entry((today, client.to_string(), project.to_string()))
                                 .or_insert_with(String::new),
                         )
                         .desired_width(f32::INFINITY)
@@ -626,27 +737,16 @@ impl TimingsApp {
                         .font(egui::FontId::new(13.0, egui::FontFamily::Proportional)),
                     );
 
+                    // When client or project changes, call on_gui_client_or_project_changed
+                    if client_input.changed() || project_input.changed() {
+                        self.on_gui_client_or_project_changed();
+                    }
+
                     // When typing to summary, call update_summary_from_gui
                     if summary_input.changed() {
-                        self.update_summary_from_gui();
-                    }
-
-                    if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        // println!("Updating desktop name from GUI");
-                        self.update_desktop_name_from_gui();
+                        self.on_gui_summary_changed();
                     }
                 });
-
-                // ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                //     if ui.button("Update name").clicked() {
-                //         self.update_desktop_name_from_gui();
-                //     }
-                // });
-
-                // Show label (focused) if has keyboard focus
-                // if self.has_keyboard_focus {
-                //     ui.label("Keyboard focused");
-                // }
 
                 ui.vertical_centered(|ui| {
                     ui.set_max_width(150.0);
@@ -668,9 +768,8 @@ impl TimingsApp {
                         );
                         ui.label(
                             egui::RichText::new(
-                                self.gui_totals
-                                    .get(&(self.gui_client.clone(), self.gui_project.clone()))
-                                    .as_ref()
+                                &totals
+                                    .clone()
                                     .map(|t| duration_to_hh_mm_ss(&t.today))
                                     // .map(|t| format!("{:.5} hours", t.today.num_seconds() as f64
                                     // / 3600.0))
@@ -686,9 +785,8 @@ impl TimingsApp {
                     cols[0].vertical_centered(|ui| {
                         ui.label("Eight weeks");
                         ui.label(
-                            self.gui_totals
-                                .get(&(self.gui_client.clone(), self.gui_project.clone()))
-                                .as_ref()
+                            &totals
+                                .clone()
                                 .map(|t| duration_to_hours(&t.eight_weeks))
                                 .unwrap_or_else(|| "N/A".to_string()),
                         );
@@ -698,9 +796,8 @@ impl TimingsApp {
                     cols[1].vertical_centered(|ui| {
                         ui.label("Last week");
                         ui.label(
-                            self.gui_totals
-                                .get(&(self.gui_client.clone(), self.gui_project.clone()))
-                                .as_ref()
+                            &totals
+                                .clone()
                                 .map(|t| duration_to_hours(&t.last_week))
                                 .unwrap_or_else(|| "N/A".to_string()),
                         );
@@ -710,9 +807,8 @@ impl TimingsApp {
                     cols[2].vertical_centered(|ui| {
                         ui.label("This week");
                         ui.label(
-                            self.gui_totals
-                                .get(&(self.gui_client.clone(), self.gui_project.clone()))
-                                .as_ref()
+                            &totals
+                                .clone()
                                 .map(|t| duration_to_hours(&t.this_week))
                                 .unwrap_or_else(|| "N/A".to_string()),
                         );
@@ -922,4 +1018,35 @@ fn duration_to_hh_mm_ss(duration: &chrono::Duration) -> String {
 
 fn duration_to_hours(duration: &chrono::Duration) -> String {
     format!("{:.2}", duration.num_seconds() as f64 / 3600.0)
+}
+
+/// Parses a desktop name into client and project.
+/// Format: "client: project" or just "client"
+fn parse_desktop_name(desktop_name: &str) -> (Option<String>, Option<String>) {
+    let parts: Vec<&str> = desktop_name.splitn(2, ':').collect();
+    if parts.len() == 2 {
+        (
+            Some(parts[0].trim().to_string()),
+            Some(parts[1].trim().to_string()),
+        )
+    } else {
+        (Some(desktop_name.trim().to_string()), None)
+    }
+}
+
+fn compare_client_and_project_names(
+    gui_client: &str,
+    gui_project: &str,
+    client: &Option<String>,
+    project: &Option<String>,
+) -> bool {
+    let client_match = match client {
+        Some(c) => gui_client.trim() == c.trim(),
+        None => gui_client.is_empty(),
+    };
+    let project_match = match project {
+        Some(p) => gui_project.trim() == p.trim(),
+        None => gui_project.is_empty(),
+    };
+    client_match && project_match
 }

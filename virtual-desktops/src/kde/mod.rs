@@ -68,13 +68,15 @@ impl VirtualDesktopController for KDEVirtualDesktopController {
         Ok(Box::pin(combined_stream))
     }
 
-    async fn update_desktop_name(&mut self, desktop_name: &str) -> Result<(), Error> {
+    async fn update_desktop_name(
+        &mut self,
+        desktop_id: DesktopId,
+        desktop_name: &str,
+    ) -> Result<(), Error> {
         let proxy =
             virtual_desktop_manager::VirtualDesktopManagerProxy::new(&self.connection).await?;
 
-        let current_id = proxy.current().await?;
-
-        proxy.set_desktop_name(&current_id, &desktop_name).await?;
+        proxy.set_desktop_name(&desktop_id.0, &desktop_name).await?;
 
         Ok(())
     }
