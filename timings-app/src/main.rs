@@ -178,6 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 AppMessage::TrayIconClicked => {
                     timings_app.update_totals().await;
+                    timings_app.update_summary().await;
                     timings_app.show_gui(&mut app);
                 }
                 AppMessage::VirtualDesktop(vd_msg) => match vd_msg {
@@ -185,6 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if id == timings_app.current_desktop {
                             timings_app.start_timing_from_desktop_name(&name);
                             timings_app.update_totals().await;
+                            timings_app.update_summary().await;
                         }
                     }
                     VirtualDesktopMessage::DesktopChange(id) => {
