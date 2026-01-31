@@ -5,6 +5,7 @@ use clap::Parser;
 use egui::CentralPanel;
 use egui::Color32;
 use egui::Context;
+use egui::Pos2;
 use futures::StreamExt;
 use idle_monitor::run_idle_monitor;
 use log::trace;
@@ -262,6 +263,8 @@ struct TimingsApp {
     current_desktop: DesktopId,
 
     // GUI fields
+    gui_debug_mode: bool,
+    gui_fps: f32,
     gui_client: String,
     gui_project: String,
     gui_totals: HashMap<(String, String), timings::Totals>,
@@ -325,6 +328,8 @@ impl TimingsApp {
             sender,
             desktop_controller: desktop_controller.clone(),
             current_desktop,
+            gui_debug_mode: false,
+            gui_fps: 0.0,
             gui_totals: HashMap::new(),
             gui_client: String::new(),
             gui_project: String::new(),
@@ -575,6 +580,7 @@ impl TimingsApp {
     pub fn handle_gui_events(&mut self, app: &mut Application, events: &[WaylandEvent]) {
         // Handle egui surface events
         if let Some(mut surface_state) = self.egui_surface_state.take() {
+            self.gui_fps = surface_state.get_fps();
             surface_state.handle_events(app, events, &mut |ctx| self.overlay_ui(ctx));
             self.egui_surface_state = Some(surface_state);
         }
@@ -675,6 +681,13 @@ impl TimingsApp {
                 self.gui_project.trim().to_string(),
             ))
             .cloned();
+        // User is holding alt key:
+        let debug_mode = self.gui_debug_mode || ctx.input(|i| i.modifiers.alt);
+
+        // Toggle debug mode with ALT+D
+        if ctx.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::D)) {
+            self.gui_debug_mode = !self.gui_debug_mode;
+        }
 
         CentralPanel::default()
             .frame(
@@ -691,6 +704,22 @@ impl TimingsApp {
                     .inner_margin(10.0),
             )
             .show(ctx, |ui| {
+                if debug_mode {
+                    let painter = ui.painter();
+                    let screen_rect = ctx.content_rect();
+
+                    painter.text(
+                        Pos2::new(screen_rect.right() - 5.0, screen_rect.top() + 5.0),
+                        egui::Align2::RIGHT_TOP,
+                        format!(
+                            "ALT+D {:7.2} / {:>4}",
+                            self.gui_fps,
+                            ctx.cumulative_pass_nr()
+                        ),
+                        egui::FontId::new(10.0, egui::FontFamily::Monospace),
+                        egui::Color32::GRAY,
+                    );
+                }
                 ui.vertical(|ui| {
                     // Client text field
                     let client_input = ui.add(
