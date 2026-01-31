@@ -80,7 +80,7 @@ enum AppMessage {
     Exit,
     WriteTimings,
     KeepAlive,
-    UpdateTotals,
+    UpdateTotalsTimer,
     ShowDailyTotals,
     TrayIconClicked,
     VirtualDesktop(VirtualDesktopMessage),
@@ -231,9 +231,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 AppMessage::RequestRender => {
                     timings_app.request_gui_frame();
                 }
-                AppMessage::UpdateTotals => {
-                    let _ = timings_app.update_totals().await;
-                    timings_app.request_gui_frame();
+                AppMessage::UpdateTotalsTimer => {
+                    if timings_app.timings_recorder.is_running() {
+                        let _ = timings_app.update_totals().await;
+                        timings_app.request_gui_frame();
+                    }
                 }
                 AppMessage::RunningChanged(is_running) => {
                     log::info!("Timings recorder running state changed: {}", is_running);
@@ -967,7 +969,10 @@ fn spawn_update_totals_thread(app_message_sender: tokio::sync::mpsc::UnboundedSe
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            if app_message_sender.send(AppMessage::UpdateTotals).is_err() {
+            if app_message_sender
+                .send(AppMessage::UpdateTotalsTimer)
+                .is_err()
+            {
                 // Main thread has exited, stop the loop
                 break;
             }
