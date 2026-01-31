@@ -613,10 +613,6 @@ impl TimingsApp {
     }
 
     fn on_gui_client_or_project_changed(&mut self) {
-        println!(
-            "GUI client or project changed: '{}' : '{}'",
-            self.gui_client, self.gui_project
-        );
         let client = self.gui_client.trim().to_string();
         let project = self.gui_project.trim().to_string();
         let current_desktop = self.current_desktop.clone();
@@ -625,10 +621,6 @@ impl TimingsApp {
             "update_client_or_project",
             std::time::Duration::from_millis(300),
             async move {
-                println!(
-                    "♦️ Updating desktop name from GUI to {}: {} id {}",
-                    client, project, current_desktop
-                );
                 let _ = controller
                     .update_desktop_name(current_desktop, &format!("{}: {}", client, project))
                     .await;
@@ -652,9 +644,6 @@ impl TimingsApp {
             "update_summary_database",
             std::time::Duration::from_millis(300),
             async move {
-                // Test
-                println!("🥕 Updating summary from GUI");
-
                 let mut conn = pool.acquire().await.unwrap();
                 conn.insert_timings_daily_summaries(
                     Local,
