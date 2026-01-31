@@ -177,9 +177,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 AppMessage::TrayIconClicked => {
+                    timings_app.show_gui(&mut app);
                     timings_app.update_totals().await;
                     timings_app.update_summary().await;
-                    timings_app.show_gui(&mut app);
                 }
                 AppMessage::VirtualDesktop(vd_msg) => match vd_msg {
                     VirtualDesktopMessage::DesktopNameChanged(id, name) => {
@@ -187,6 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             timings_app.start_timing_from_desktop_name(&name);
                             timings_app.update_totals().await;
                             timings_app.update_summary().await;
+                            timings_app.request_gui_frame();
                         }
                     }
                     VirtualDesktopMessage::DesktopChange(id) => {
@@ -264,7 +265,7 @@ struct TimingsApp {
     gui_client: String,
     gui_project: String,
     gui_totals: HashMap<(String, String), timings::Totals>,
-    gui_summaries: HashMap<(NaiveDate, String, String), String>,
+    gui_summaries: HashMap<(NaiveDate, String, String), Option<String>>,
     has_keyboard_focus: bool,
     egui_surface_state: Option<EguiSurfaceState<LayerSurface>>,
 
@@ -421,13 +422,12 @@ impl TimingsApp {
     pub async fn update_summary(&mut self) {
         if let Some(client) = self.client.as_ref()
             && let Some(project) = self.project.as_ref()
-            && self.egui_surface_state.is_some()
         {
             let today = Local::now().date_naive();
             let key = (today, client.clone(), project.clone());
 
             // Check if summary is already cached
-            if self.gui_summaries.contains_key(&key) {
+            if self.gui_summaries.get(&key).map(|s| s.is_some()) == Some(true) {
                 log::trace!("Summary already cached for {}: {}", client, project);
                 return;
             }
@@ -446,14 +446,12 @@ impl TimingsApp {
                 )
                 .await
             {
-                let summary = summaries
-                    .first()
-                    .map(|s| s.summary.clone())
-                    .unwrap_or_default();
-                self.gui_summaries.insert(key, summary);
+                let summary = summaries.first().map(|s| s.summary.clone());
+                self.gui_summaries
+                    .insert(key, Some(summary.unwrap_or_default()));
             } else {
-                // Cache as empty string to avoid repeated queries
-                self.gui_summaries.insert(key, String::new());
+                // Cache empty string, to allow editing in GUI
+                self.gui_summaries.insert(key, Some(String::new()));
             }
         }
     }
@@ -646,11 +644,12 @@ impl TimingsApp {
         let summary = self
             .gui_summaries
             .get(&(today, self.gui_client.clone(), self.gui_project.clone()))
+            .and_then(|opt| opt.as_ref())
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
         let pool = self.pool.clone();
         run_debounced_spawn(
-            "update_summary",
+            "update_summary_database",
             std::time::Duration::from_millis(300),
             async move {
                 // Test
@@ -727,12 +726,17 @@ impl TimingsApp {
                     ui.add_space(5.0);
 
                     // Summary text field
-                    let summary_input = ui.add(
-                        egui::TextEdit::singleline(
-                            self.gui_summaries
-                                .entry((today, client.to_string(), project.to_string()))
-                                .or_insert_with(String::new),
-                        )
+                    let summary_value = self
+                        .gui_summaries
+                        .entry((today, client.to_string(), project.to_string()))
+                        .or_default();
+                    let mut empty_value = String::new();
+                    let summary_input = ui.add_enabled(
+                        summary_value.is_some(),
+                        egui::TextEdit::singleline(match summary_value {
+                            Some(v) => v,
+                            None => &mut empty_value,
+                        })
                         .desired_width(f32::INFINITY)
                         .horizontal_align(egui::Align::Center)
                         .background_color(Color32::from_white_alpha(0))
