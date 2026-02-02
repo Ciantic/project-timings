@@ -61,19 +61,21 @@ impl TimingsRecorder {
         now: DateTime<Utc>,
         conn: &mut T,
     ) -> Result<Totals, Error> {
-        if !self.totals_cache.has_cached_totals(client, project) {
+        let current_timing_start = if !self.totals_cache.has_cached_totals(client, project) {
             // Writing timings before getting totals to ensure up-to-date data for uncached
-            // totals
+            // totals. `write_timings` writes the current timing as well thus it should be
+            // empty.
             self.write_timings(conn, now).await?;
-        }
-
-        let current_timing_start = self.current_timing.as_ref().and_then(|ct| {
-            if ct.client == client && ct.project == project {
-                Some(ct.start)
-            } else {
-                None
-            }
-        });
+            None
+        } else {
+            self.current_timing.as_ref().and_then(|ct| {
+                if ct.client == client && ct.project == project {
+                    Some(ct.start)
+                } else {
+                    None
+                }
+            })
+        };
 
         self.totals_cache
             .get_totals(client, project, now, conn, current_timing_start)
