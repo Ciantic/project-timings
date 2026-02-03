@@ -7,7 +7,9 @@ use crate::TotalsCache;
 use crate::api::TimingsRecording;
 use chrono::DateTime;
 use chrono::Duration;
+use chrono::NaiveDate;
 use chrono::Utc;
+use std::collections::HashMap;
 
 // This implementation exists in older TypeScript codebase:
 // https://github.com/Ciantic/winvd-monitoring/blob/b9e27d84a8412b0e97285f0dd869f56a57b3df4b/ui/TimingRecorder.ts#L14
@@ -25,6 +27,7 @@ pub struct TimingsRecorder {
     last_keep_alive: Option<DateTime<Utc>>,
     minimum_timing: Duration,
     totals_cache: TotalsCache,
+    summary_cache: HashMap<(NaiveDate, String, String), String>,
     running_changed: Option<Box<dyn Fn(bool) + Send + Sync>>,
 }
 
@@ -41,6 +44,7 @@ impl TimingsRecorder {
             last_keep_alive: None,
             minimum_timing: min,
             totals_cache: TotalsCache::new(),
+            summary_cache: HashMap::new(),
             running_changed: None,
         }
     }
@@ -80,6 +84,56 @@ impl TimingsRecorder {
         self.totals_cache
             .get_totals(client, project, now, conn, current_timing_start)
             .await
+    }
+
+    pub fn get_summary_if_cached(
+        &self,
+        day: NaiveDate,
+        client: &str,
+        project: &str,
+    ) -> Option<String> {
+        self.summary_cache
+            .get(&(day, client.to_string(), project.to_string()))
+            .cloned()
+    }
+
+    pub async fn get_summary<T: TimingsQueries + TimingsMutations>(
+        &mut self,
+        day: NaiveDate,
+        client: &str,
+        project: &str,
+        now: DateTime<Utc>,
+        conn: &mut T,
+    ) -> Result<String, Error> {
+        if let Some(cached) =
+            self.summary_cache
+                .get(&(day, client.to_string(), project.to_string()))
+        {
+            return Ok(cached.clone());
+        }
+
+        // Ensure timings are written before fetching summary
+        self.write_timings(conn, now).await?;
+
+        let summaries = conn
+            .get_timings_daily_summaries(
+                Utc,
+                day,
+                day,
+                Some(client.to_string()),
+                Some(project.to_string()),
+            )
+            .await?;
+
+        if let Some(summary) = summaries.into_iter().next() {
+            self.summary_cache.insert(
+                (day, client.to_string(), project.to_string()),
+                summary.summary.clone(),
+            );
+            Ok(summary.summary)
+        } else {
+            Ok(String::new())
+        }
     }
 
     fn add_timing(&mut self, timing: Timing) {
