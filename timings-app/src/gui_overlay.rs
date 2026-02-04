@@ -19,7 +19,6 @@ use sqlx::SqlitePool;
 use std::collections::HashMap;
 use timings::SummaryForDay;
 use timings::TimingsMutations;
-use timings::TimingsQueries;
 use timings::TimingsRecording;
 use tokio::sync::mpsc::UnboundedSender;
 use virtual_desktops::DesktopId;
@@ -33,7 +32,12 @@ use wayapp::WaylandEvent;
 #[derive(Debug, PartialEq, Clone)]
 pub enum GuiOverlayEvent {
     UpdateTotalsTimer,
-    SummaryFromDatabase {
+    UpdateSummaryCache {
+        day: NaiveDate,
+        client: String,
+        project: String,
+    },
+    UpdateSummary {
         day: NaiveDate,
         client: String,
         project: String,
@@ -134,11 +138,10 @@ impl GuiOverlay {
         let client = self.gui_client.trim().to_string();
         let project = self.gui_project.trim().to_string();
         log::trace!("Updating totals cache");
-        let mut conn = self.pool.acquire().await.unwrap();
         let now = chrono::Utc::now();
         if let Some(totals) = parent
             .timings_recorder
-            .get_totals(&client, &project, now, &mut *conn)
+            .get_totals(&client, &project, now)
             .await
             .ok()
         {
@@ -153,14 +156,8 @@ impl GuiOverlay {
         let current_desktop = self.current_desktop.clone();
         let mut controller = self.desktop_controller.clone();
         let app_message_sender = self.app_message_sender.clone();
-        let pool = self.pool.clone();
         let today = Local::now().date_naive();
-        self.gui_summary = parent
-            .timings_recorder
-            .get_summary_if_cached(today.clone(), &client, &project)
-            .unwrap_or_default();
-
-        let timings_recorder = parent.timings_recorder.clone();
+        self.update_gui_summary_from_cache(parent);
 
         run_debounced_spawn(
             "update_client_or_project",
@@ -170,69 +167,53 @@ impl GuiOverlay {
                     .update_desktop_name(current_desktop, &format!("{}: {}", client, project))
                     .await;
 
-                let mut conn = pool.acquire().await.unwrap();
-                // let zoo = timings_recorder
-                //     .get_totals(&client, &project, chrono::Utc::now(), &mut *conn)
-                //     .await
-                //     .ok();
-
-                let summary = Some("test".to_string());
-                // let summary = timings_recorder
-                //     .get_summary(
-                //         today,
-                //         &client,
-                //         &project,
-                //         chrono::Utc::now(),
-                //         &mut *pool.acquire().await.unwrap(),
-                //     )
-                //     .await
-                //     .ok();
-
                 let _ = app_message_sender.send(AppMessage::GuiOverlayEvent(
-                    GuiOverlayEvent::SummaryFromDatabase {
+                    GuiOverlayEvent::UpdateSummaryCache {
                         day: today,
                         client,
                         project,
-                        summary: summary.unwrap_or_default(),
                     },
                 ));
             },
         );
     }
 
-    fn on_gui_summary_changed(&mut self) {
-        let today = Local::now().date_naive();
+    fn update_gui_summary_from_cache(&mut self, parent: &mut TimingsApp) {
+        let day = Local::now().date_naive();
+        let client = self.gui_client.trim().to_string();
+        let project = self.gui_project.trim().to_string();
+        self.gui_summary = parent
+            .timings_recorder
+            .get_summary_if_cached(day, &client, &project)
+            .unwrap_or_default();
+    }
+
+    fn on_gui_summary_changed(&mut self, parent: &mut TimingsApp) {
+        let day = Local::now().date_naive();
         let client = self.gui_client.trim().to_string();
         let project = self.gui_project.trim().to_string();
         let summary = self.gui_summary.trim().to_string();
-        let pool = self.pool.clone();
+        let tx = self.app_message_sender.clone();
         run_debounced_spawn(
             "update_summary_database",
             std::time::Duration::from_millis(300),
             async move {
-                let mut conn = pool.acquire().await.unwrap();
-                conn.insert_timings_daily_summaries(
-                    Local,
-                    &[SummaryForDay {
-                        day: today,
-                        client: client.clone(),
-                        project: project.clone(),
-                        summary: summary,
-                        archived: false,
-                    }],
-                )
-                .await
-                .unwrap();
+                tx.send(AppMessage::GuiOverlayEvent(
+                    GuiOverlayEvent::UpdateSummary {
+                        day,
+                        client,
+                        project,
+                        summary,
+                    },
+                ))
+                .ok();
             },
         );
     }
 
     fn overlay_ui(&mut self, ctx: &Context, parent: &mut TimingsApp) {
         ctx.set_visuals(egui::Visuals::light());
-        let today = Local::now().date_naive();
         let bg_color = ctx.style().visuals.panel_fill;
-        let client = self.gui_client.trim().to_string();
-        let project = self.gui_project.trim().to_string();
         let is_running = parent.timings_recorder.is_running();
         let totals = self
             .gui_totals
@@ -320,7 +301,7 @@ impl GuiOverlay {
 
                     // When typing to summary, call update_summary_from_gui
                     if summary_input.changed() {
-                        self.on_gui_summary_changed();
+                        self.on_gui_summary_changed(parent);
                     }
                 });
 
@@ -328,7 +309,7 @@ impl GuiOverlay {
                     ui.set_max_width(150.0);
                     ui.set_max_height(45.0);
                     ui.horizontal_centered(|ui| {
-                        let circle_color = if is_running {
+                        let circle_color = if parent.timings_recorder.is_running() {
                             egui::Color32::GREEN
                         } else {
                             egui::Color32::RED
@@ -438,7 +419,7 @@ impl GuiOverlay {
         }
     }
 
-    pub fn handle_app_events(
+    pub async fn handle_app_events(
         &mut self,
         parent: &mut TimingsApp,
         _app: &mut Application,
@@ -450,17 +431,33 @@ impl GuiOverlay {
                     GuiOverlayEvent::UpdateTotalsTimer => {
                         futures::executor::block_on(self.update_totals(parent));
                     }
-                    GuiOverlayEvent::SummaryFromDatabase {
-                        day: _,
+                    GuiOverlayEvent::UpdateSummaryCache {
+                        day,
+                        client,
+                        project,
+                    } => {
+                        parent
+                            .timings_recorder
+                            .update_summary_cache(
+                                day.clone(),
+                                &client.clone(),
+                                &project.clone(),
+                                Utc::now(),
+                            )
+                            .await
+                            .ok();
+                    }
+                    GuiOverlayEvent::UpdateSummary {
+                        day,
                         client,
                         project,
                         summary,
                     } => {
-                        if self.gui_client.trim() == client.trim()
-                            && self.gui_project.trim() == project.trim()
-                        {
-                            self.gui_summary = summary.clone();
-                        }
+                        parent
+                            .timings_recorder
+                            .update_summary(*day, client, project, summary)
+                            .await
+                            .ok();
                     }
                 }
                 self.request_frame();
@@ -468,20 +465,21 @@ impl GuiOverlay {
             AppMessage::VirtualDesktop(vdm) => match vdm {
                 VirtualDesktopMessage::DesktopChange(desktop_id) => {
                     self.current_desktop = desktop_id.clone();
-                    let desktop_name = futures::executor::block_on(
-                        self.desktop_controller.get_desktop_name(desktop_id),
-                    )
-                    .unwrap_or_default();
+                    let desktop_name = self
+                        .desktop_controller
+                        .get_desktop_name(desktop_id)
+                        .await
+                        .unwrap_or_default();
                     let (gui_client, gui_project) = parse_desktop_name(&desktop_name);
-                    let mut conn = futures::executor::block_on(self.pool.acquire()).unwrap();
-                    self.gui_summary =
-                        futures::executor::block_on(parent.timings_recorder.get_summary(
+                    self.gui_summary = parent
+                        .timings_recorder
+                        .update_summary_cache(
                             Local::now().date_naive(),
                             &gui_client.clone().unwrap_or_default(),
                             &gui_project.clone().unwrap_or_default(),
                             Utc::now(),
-                            &mut conn,
-                        ))
+                        )
+                        .await
                         .unwrap_or_default();
                     self.gui_client = gui_client.unwrap_or_default();
                     self.gui_project = gui_project.unwrap_or_default();
@@ -490,15 +488,15 @@ impl GuiOverlay {
                 VirtualDesktopMessage::DesktopNameChanged(desktop_id, desktop_name) => {
                     if *desktop_id == self.current_desktop {
                         let (gui_client, gui_project) = parse_desktop_name(&desktop_name);
-                        let mut conn = futures::executor::block_on(self.pool.acquire()).unwrap();
-                        self.gui_summary =
-                            futures::executor::block_on(parent.timings_recorder.get_summary(
+                        self.gui_summary = parent
+                            .timings_recorder
+                            .update_summary_cache(
                                 Local::now().date_naive(),
                                 &gui_client.clone().unwrap_or_default(),
                                 &gui_project.clone().unwrap_or_default(),
                                 Utc::now(),
-                                &mut conn,
-                            ))
+                            )
+                            .await
                             .unwrap_or_default();
                         self.gui_client = gui_client.unwrap_or_default();
                         self.gui_project = gui_project.unwrap_or_default();

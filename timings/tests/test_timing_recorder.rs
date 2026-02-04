@@ -63,7 +63,7 @@ async fn test_start_timing_multiple_and_persist() -> Result<(), Box<dyn std::err
 
     // Write to database
     let write_time = start_time + Duration::seconds(400);
-    recorder.write_timings(&mut *conn, write_time).await?;
+    recorder.write_timings(&mut conn, write_time).await?;
 
     // Verify all were written
     let timings = conn.get_timings(None).await?;

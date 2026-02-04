@@ -3,6 +3,8 @@ use chrono::DateTime;
 use chrono::NaiveDate;
 use chrono::TimeZone;
 use chrono::Utc;
+use sqlx::Sqlite;
+use sqlx::pool::PoolConnection;
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct Timing {
@@ -116,9 +118,5 @@ pub trait TimingsRecording {
     fn keep_alive_timing(&mut self, now: DateTime<Utc>) -> ();
 
     /// Flushes unwritten timings to the database.
-    async fn write_timings(
-        &mut self,
-        conn: &mut impl TimingsMutations,
-        now: DateTime<Utc>,
-    ) -> Result<(), Error>;
+    async fn write_timings(&mut self, now: DateTime<Utc>) -> Result<(), Error>;
 }

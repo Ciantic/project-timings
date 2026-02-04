@@ -1,6 +1,4 @@
 use chrono::Duration;
-use chrono::Local;
-use chrono::NaiveDate;
 use clap::Parser;
 use futures::StreamExt;
 use idle_monitor::run_idle_monitor;
@@ -8,16 +6,12 @@ use log::trace;
 use single_instance::only_single_instance;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Mutex;
 use std::thread;
 use timings::TimingsMockdata;
 use timings::TimingsMutations;
-use timings::TimingsQueries;
 use timings::TimingsRecorder;
-use timings::TimingsRecorderShared;
 use timings::TimingsRecording;
 use tokio::sync::mpsc::UnboundedSender;
 use trayicon::Icon;
@@ -114,18 +108,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let desktop_controller = KDEVirtualDesktopController::new().await?;
 
     let tx = appmsg_sender.clone();
-    let mut timings_recorder =
-        TimingsRecorderShared::new(Duration::seconds(cli.minimum_timing as i64));
-
-    timings_recorder.set_running_changed_callback(move |running| {
-        let _ = tx.send(AppMessage::RunningChanged(running));
-    });
 
     // Stats GUI
     // Start the timings app
     let mut timings_app = TimingsApp::new(
+        cli.minimum_timing as i64,
         &database_path,
-        timings_recorder,
         appmsg_sender.clone(),
         &desktop_controller,
     )
@@ -157,7 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 struct TimingsApp {
     // Timing recording fields
-    timings_recorder: timings::TimingsRecorderShared,
+    timings_recorder: timings::TimingsRecorder,
     pool: SqlitePool,
     sender: UnboundedSender<AppMessage>,
     desktop_controller: KDEVirtualDesktopController,
@@ -176,8 +164,8 @@ struct TimingsApp {
 
 impl TimingsApp {
     pub async fn new(
+        minimum_timing: i64,
         database: &str,
-        timings_recorder: timings::TimingsRecorderShared,
         sender: UnboundedSender<AppMessage>,
         desktop_controller: &KDEVirtualDesktopController,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -186,6 +174,14 @@ impl TimingsApp {
         let pool = SqlitePool::connect_with(options).await?;
         let mut conn = pool.acquire().await?;
         conn.create_timings_database().await?;
+
+        let mut timings_recorder =
+            TimingsRecorder::new(pool.clone(), Duration::seconds(minimum_timing));
+
+        let sender_ = sender.clone();
+        timings_recorder.set_running_changed_callback(move |running| {
+            let _ = sender_.send(AppMessage::RunningChanged(running));
+        });
 
         // Insert mockdata in debug mode with :memory:
         #[cfg(debug_assertions)]
@@ -311,9 +307,8 @@ impl TimingsApp {
     /// Writes accumulated timings to the database.
     pub async fn write_timings(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         log::info!("Writing timings to database");
-        let mut conn = self.pool.acquire().await?;
         let now = chrono::Utc::now();
-        self.timings_recorder.write_timings(&mut *conn, now).await?;
+        self.timings_recorder.write_timings(now).await?;
         log::info!("Successfully wrote timings to database");
         Ok(())
     }
@@ -400,7 +395,7 @@ impl TimingsApp {
     ) -> Result<bool, Box<dyn std::error::Error>> {
         // Handle GUI overlay events first
         if let Some(mut overlay) = self.gui_overlay.take() {
-            overlay.handle_app_events(self, app, event);
+            overlay.handle_app_events(self, app, event).await;
             self.gui_overlay = Some(overlay);
         }
 

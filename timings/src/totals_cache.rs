@@ -1,10 +1,13 @@
 use crate::Error;
 use crate::Timing;
+use crate::TimingsQueries;
 use chrono::DateTime;
 use chrono::Datelike;
 use chrono::Duration;
 use chrono::NaiveDate;
 use chrono::Utc;
+use sqlx::Sqlite;
+use sqlx::pool::PoolConnection;
 use std::collections::HashMap;
 use std::ops::Add;
 
@@ -36,7 +39,7 @@ impl DailyTotals {
     }
 
     pub async fn from_database(
-        conn: &mut impl crate::TimingsQueries,
+        conn: &mut PoolConnection<Sqlite>,
         client: &str,
         project: &str,
         from: DateTime<Utc>,
@@ -198,7 +201,7 @@ impl TotalsCache {
         client: &str,
         project: &str,
         now: DateTime<Utc>,
-        conn: &mut impl crate::TimingsQueries,
+        conn: &mut PoolConnection<Sqlite>,
         current_timing_start: Option<DateTime<Utc>>,
     ) -> Result<Totals, Error> {
         let totals = match self.totals.get(&(client.to_string(), project.to_string())) {

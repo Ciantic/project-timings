@@ -14,4 +14,3 @@ futures = "0.3.31"
 chrono = { version = "0.4", features = ["serde"] }
 const_format = { version = "0.2.35", features = ["rust_1_64"] }
 log = "0.4.29"
-parking_lot = "0.12.5"

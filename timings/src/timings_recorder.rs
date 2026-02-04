@@ -1,4 +1,5 @@
 use crate::Error;
+use crate::SummaryForDay;
 use crate::Timing;
 use crate::TimingsMutations;
 use crate::TimingsQueries;
@@ -9,6 +10,8 @@ use chrono::DateTime;
 use chrono::Duration;
 use chrono::NaiveDate;
 use chrono::Utc;
+use sqlx::Pool;
+use sqlx::Sqlite;
 use std::collections::HashMap;
 
 // This implementation exists in older TypeScript codebase:
@@ -29,10 +32,11 @@ pub struct TimingsRecorder {
     totals_cache: TotalsCache,
     summary_cache: HashMap<(NaiveDate, String, String), String>,
     running_changed: Option<Box<dyn Fn(bool) + Send + Sync>>,
+    pool: Pool<Sqlite>,
 }
 
 impl TimingsRecorder {
-    pub fn new(minimum_timing: Duration) -> Self {
+    pub fn new(pool: Pool<Sqlite>, minimum_timing: Duration) -> Self {
         let min = if minimum_timing < Duration::zero() {
             Duration::zero()
         } else {
@@ -46,6 +50,7 @@ impl TimingsRecorder {
             totals_cache: TotalsCache::new(),
             summary_cache: HashMap::new(),
             running_changed: None,
+            pool,
         }
     }
 
@@ -58,18 +63,17 @@ impl TimingsRecorder {
 
     /// Get totals for a client/project, either from cache or by calculating
     /// from database.
-    pub async fn get_totals<T: TimingsQueries + TimingsMutations>(
+    pub async fn get_totals(
         &mut self,
         client: &str,
         project: &str,
         now: DateTime<Utc>,
-        conn: &mut T,
     ) -> Result<Totals, Error> {
         let current_timing_start = if !self.totals_cache.has_cached_totals(client, project) {
             // Writing timings before getting totals to ensure up-to-date data for uncached
             // totals. `write_timings` writes the current timing as well thus it should be
             // empty.
-            self.write_timings(conn, now).await?;
+            self.write_timings(now).await?;
             None
         } else {
             self.current_timing.as_ref().and_then(|ct| {
@@ -81,8 +85,9 @@ impl TimingsRecorder {
             })
         };
 
+        let mut conn = self.pool.acquire().await?;
         self.totals_cache
-            .get_totals(client, project, now, conn, current_timing_start)
+            .get_totals(client, project, now, &mut conn, current_timing_start)
             .await
     }
 
@@ -97,24 +102,33 @@ impl TimingsRecorder {
             .cloned()
     }
 
-    pub async fn get_summary<T: TimingsQueries + TimingsMutations>(
+    pub async fn update_summary_cache(
         &mut self,
         day: NaiveDate,
         client: &str,
         project: &str,
         now: DateTime<Utc>,
-        conn: &mut T,
     ) -> Result<String, Error> {
+        if client.trim().is_empty() || project.trim().is_empty() {
+            return Ok(String::new());
+        }
         if let Some(cached) =
             self.summary_cache
                 .get(&(day, client.to_string(), project.to_string()))
         {
             return Ok(cached.clone());
         }
+        log::trace!(
+            "Updating summary cache for day={}, client='{}', project='{}' to ",
+            day,
+            client,
+            project,
+        );
 
         // Ensure timings are written before fetching summary
-        self.write_timings(conn, now).await?;
+        self.write_timings(now).await?;
 
+        let mut conn = self.pool.acquire().await?;
         let summaries = conn
             .get_timings_daily_summaries(
                 Utc,
@@ -134,6 +148,45 @@ impl TimingsRecorder {
         } else {
             Ok(String::new())
         }
+    }
+
+    pub async fn update_summary(
+        &mut self,
+        day: NaiveDate,
+        client: &str,
+        project: &str,
+        summary: &str,
+    ) -> Result<(), Error> {
+        if client.trim().is_empty() || project.trim().is_empty() {
+            return Ok(());
+        }
+        log::trace!(
+            "Updating summary for day={}, client='{}', project='{}' to '{}'",
+            day,
+            client,
+            project,
+            summary
+        );
+
+        self.summary_cache.insert(
+            (day, client.to_string(), project.to_string()),
+            summary.to_string(),
+        );
+
+        let mut conn = self.pool.acquire().await?;
+        conn.insert_timings_daily_summaries(
+            Utc,
+            &[SummaryForDay {
+                day,
+                client: client.to_string(),
+                project: project.to_string(),
+                summary: summary.to_string(),
+                archived: false,
+            }],
+        )
+        .await?;
+
+        Ok(())
     }
 
     fn add_timing(&mut self, timing: Timing) {
@@ -262,11 +315,7 @@ impl TimingsRecording for TimingsRecorder {
         self.last_keep_alive = Some(now);
     }
 
-    async fn write_timings(
-        &mut self,
-        conn: &mut impl TimingsMutations,
-        now: DateTime<Utc>,
-    ) -> Result<(), Error> {
+    async fn write_timings(&mut self, now: DateTime<Utc>) -> Result<(), Error> {
         let mut timings_to_write = self.unwritten_timings.clone();
 
         // Include current running timing if it exists and meets minimum duration
@@ -284,6 +333,7 @@ impl TimingsRecording for TimingsRecorder {
         }
 
         log::trace!("Writing {} timings to database", timings_to_write.len());
+        let mut conn = self.pool.acquire().await?;
         conn.insert_timings(&timings_to_write).await?;
         self.unwritten_timings.clear();
         Ok(())
