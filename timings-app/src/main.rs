@@ -575,7 +575,7 @@ fn spawn_write_timings_thread(app_message_sender: tokio::sync::mpsc::UnboundedSe
     });
 }
 
-/// Spawns a thread that sends a tick message every second
+/// Spawns a keep alive thread for timings recorder
 fn spawn_keepalive_thread(app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>) {
     tokio::spawn(async move {
         loop {
