@@ -473,35 +473,17 @@ impl GuiOverlay {
                         .await
                         .unwrap_or_default();
                     let (gui_client, gui_project) = parse_desktop_name(&desktop_name);
-                    self.gui_summary = parent
-                        .timings_recorder
-                        .update_summary_cache(
-                            Local::now().date_naive(),
-                            &gui_client.clone().unwrap_or_default(),
-                            &gui_project.clone().unwrap_or_default(),
-                            Utc::now(),
-                        )
-                        .await
-                        .ok();
                     self.gui_client = gui_client.unwrap_or_default();
                     self.gui_project = gui_project.unwrap_or_default();
+                    self.update_gui_summary_from_cache(parent);
                     self.request_frame();
                 }
                 VirtualDesktopMessage::DesktopNameChanged(desktop_id, desktop_name) => {
                     if *desktop_id == self.current_desktop {
                         let (gui_client, gui_project) = parse_desktop_name(&desktop_name);
-                        self.gui_summary = parent
-                            .timings_recorder
-                            .update_summary_cache(
-                                Local::now().date_naive(),
-                                &gui_client.clone().unwrap_or_default(),
-                                &gui_project.clone().unwrap_or_default(),
-                                Utc::now(),
-                            )
-                            .await
-                            .ok();
                         self.gui_client = gui_client.unwrap_or_default();
                         self.gui_project = gui_project.unwrap_or_default();
+                        self.update_gui_summary_from_cache(parent);
                         self.request_frame();
                     }
                 }
