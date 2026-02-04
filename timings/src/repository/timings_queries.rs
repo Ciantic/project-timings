@@ -10,7 +10,6 @@ use crate::SummaryForDay;
 use crate::Timing;
 use crate::TimingsQueries;
 use crate::error::Error;
-use chrono::DateTime;
 use chrono::NaiveDate;
 use chrono::Utc;
 use const_format::str_split;
@@ -105,13 +104,31 @@ impl TimingsQueries for SqliteConnection {
 
     async fn get_timings_daily_totals(
         &mut self,
-        from: DateTime<Utc>,
-        to: DateTime<Utc>,
+        timezone: impl chrono::TimeZone,
+        from: NaiveDate,
+        to: NaiveDate,
         client: Option<String>,
         project: Option<String>,
     ) -> Result<Vec<DailyTotalSummary>, Error> {
-        let from_ms = datetime_to_ms(&from);
-        let to_ms = datetime_to_ms(&to);
+        // Convert NaiveDate to milliseconds timestamps
+        let from_dt = timezone
+            .from_local_datetime(&from.and_hms_opt(0, 0, 0).ok_or_else(|| {
+                Error::ChronoError("Failed to create time at midnight for from date".to_string())
+            })?)
+            .single()
+            .map(|dt| dt.with_timezone(&Utc))
+            .ok_or_else(|| Error::ChronoError("Failed to convert from date to UTC".to_string()))?;
+
+        let to_dt = timezone
+            .from_local_datetime(&to.and_hms_opt(23, 59, 59).ok_or_else(|| {
+                Error::ChronoError("Failed to create time at end of day for to date".to_string())
+            })?)
+            .single()
+            .map(|dt| dt.with_timezone(&Utc))
+            .ok_or_else(|| Error::ChronoError("Failed to convert to date to UTC".to_string()))?;
+
+        let from_ms = datetime_to_ms(&from_dt);
+        let to_ms = datetime_to_ms(&to_dt);
 
         let query_parts = str_split!(
             r#"

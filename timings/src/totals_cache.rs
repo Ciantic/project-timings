@@ -46,10 +46,13 @@ impl DailyTotals {
         to: DateTime<Utc>,
     ) -> Result<Self, Error> {
         let mut daily_totals_map: HashMap<NaiveDate, Duration> = HashMap::new();
+        let from_date = from.with_timezone(&chrono::Local).naive_local().date();
+        let to_date = to.with_timezone(&chrono::Local).naive_local().date();
         let daily_totals = conn
             .get_timings_daily_totals(
-                from,
-                to,
+                chrono::Local,
+                from_date,
+                to_date,
                 Some(client.to_string()),
                 Some(project.to_string()),
             )

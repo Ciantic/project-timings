@@ -36,6 +36,15 @@ pub struct SummaryForDay {
     pub archived: bool,
 }
 
+pub struct SummaryAndTotalForDay {
+    pub day: NaiveDate,
+    pub project: String,
+    pub client: String,
+    pub summary: String,
+    pub archived: bool,
+    pub hours: f64,
+}
+
 /// Trait for querying timings database.
 ///
 /// This is implemented for &mut SqliteConnection in
@@ -49,8 +58,9 @@ pub trait TimingsQueries {
 
     async fn get_timings_daily_totals(
         &mut self,
-        from: DateTime<Utc>,
-        to: DateTime<Utc>,
+        timezone: impl TimeZone,
+        from: NaiveDate,
+        to: NaiveDate,
         client: Option<String>,
         project: Option<String>,
     ) -> Result<Vec<DailyTotalSummary>, Error>;
@@ -63,6 +73,49 @@ pub trait TimingsQueries {
         client: Option<String>,
         project: Option<String>,
     ) -> Result<Vec<SummaryForDay>, Error>;
+
+    async fn get_timings_daily_totals_and_summaries(
+        &mut self,
+        timezone: impl TimeZone,
+        from: NaiveDate,
+        to: NaiveDate,
+        client: Option<String>,
+        project: Option<String>,
+    ) -> Result<Vec<SummaryAndTotalForDay>, Error> {
+        let totals = self
+            .get_timings_daily_totals(timezone.clone(), from, to, client.clone(), project.clone())
+            .await?;
+
+        let summaries = self
+            .get_timings_daily_summaries(timezone, from, to, client, project)
+            .await?;
+
+        let summaries_map = summaries
+            .into_iter()
+            .map(|s| ((s.day, s.client.clone(), s.project.clone()), s))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let result = totals
+            .into_iter()
+            .map(|total| {
+                let (summary, archived) = summaries_map
+                    .get(&(total.day, total.client.clone(), total.project.clone()))
+                    .map(|s| (s.summary.clone(), s.archived))
+                    .unwrap_or_default();
+
+                SummaryAndTotalForDay {
+                    day: total.day,
+                    project: total.project,
+                    client: total.client,
+                    summary,
+                    archived,
+                    hours: total.hours,
+                }
+            })
+            .collect();
+
+        Ok(result)
+    }
 }
 
 /// Trait for mutating timings database.

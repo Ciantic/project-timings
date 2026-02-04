@@ -1,4 +1,5 @@
 use chrono::Duration;
+use chrono::Local;
 use clap::Parser;
 use futures::StreamExt;
 use idle_monitor::run_idle_monitor;
@@ -67,6 +68,7 @@ enum AppMessage {
     WriteTimings,
     KeepAlive,
     ShowDailyTotals,
+    ShowDailySummaries,
     TrayIconClicked,
     VirtualDesktop(VirtualDesktopMessage),
     VirtualDesktopThreadExited,
@@ -299,11 +301,11 @@ impl TimingsApp {
         use timings::TimingsQueries;
 
         let mut conn = self.pool.acquire().await?;
-        let end_date = chrono::Utc::now();
+        let end_date = chrono::Local::now().naive_local().date();
         let start_date = end_date - chrono::Duration::days(180);
 
         let mut totals = conn
-            .get_timings_daily_totals(start_date, end_date, None, None)
+            .get_timings_daily_totals(Local, start_date, end_date, None, None)
             .await?;
         totals.reverse();
 
@@ -324,6 +326,42 @@ impl TimingsApp {
             println!(
                 "{:<12} {:<20} {:<20} {:>10.2}",
                 total.day, total.client, total.project, total.hours
+            );
+        }
+        println!();
+
+        Ok(())
+    }
+
+    pub async fn show_daily_summaries(&self) -> Result<(), Box<dyn std::error::Error>> {
+        use timings::TimingsQueries;
+
+        let mut conn = self.pool.acquire().await?;
+        let end_date = chrono::Local::now().naive_local().date();
+        let start_date = end_date - chrono::Duration::days(28);
+
+        let mut summaries = conn
+            .get_timings_daily_totals_and_summaries(Local, start_date, end_date, None, None)
+            .await?;
+        summaries.reverse();
+
+        if summaries.is_empty() {
+            println!("No timings found for the past 4 weeks.");
+            return Ok(());
+        }
+
+        // Print table header
+        println!(
+            "\n{:<12} {:<20} {:<20} {:>10} {}",
+            "Date", "Client", "Project", "Hours", "Summary"
+        );
+        println!("{}", "-".repeat(100));
+
+        // Print each row
+        for summary in summaries {
+            println!(
+                "{:<12} {:<20} {:<20} {:>10.2} {}",
+                summary.day, summary.client, summary.project, summary.hours, summary.summary
             );
         }
         println!();
@@ -404,6 +442,11 @@ impl TimingsApp {
             AppMessage::ShowDailyTotals => {
                 if let Err(e) = self.show_daily_totals().await {
                     log::error!("Failed to show daily totals: {}", e);
+                }
+            }
+            AppMessage::ShowDailySummaries => {
+                if let Err(e) = self.show_daily_summaries().await {
+                    log::error!("Failed to show daily summaries: {}", e);
                 }
             }
             AppMessage::TrayIconClicked => {
@@ -537,6 +580,7 @@ fn spawn_stdin_reader(app_message_sender: tokio::sync::mpsc::UnboundedSender<App
         println!("Q: Exit");
         println!("1: Write timings to database");
         println!("2: Show daily totals from past 6 months");
+        println!("3: Show daily summaries from past 4 weeks");
         println!("Type command and press Enter: ");
     }
     // let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -553,6 +597,9 @@ fn spawn_stdin_reader(app_message_sender: tokio::sync::mpsc::UnboundedSender<App
                 }
                 "2" => {
                     let _ = app_message_sender.send(AppMessage::ShowDailyTotals);
+                }
+                "3" => {
+                    let _ = app_message_sender.send(AppMessage::ShowDailySummaries);
                 }
                 _ => {
                     print_info();
