@@ -8,6 +8,7 @@ use crate::TotalsCache;
 use crate::api::TimingsRecording;
 use chrono::DateTime;
 use chrono::Duration;
+use chrono::Local;
 use chrono::NaiveDate;
 use chrono::Utc;
 use sqlx::Pool;
@@ -119,7 +120,7 @@ impl TimingsRecorder {
             return Ok(cached.clone());
         }
         log::trace!(
-            "Updating summary cache for day={}, client='{}', project='{}' to ",
+            "Updating summary cache for day={}, client='{}', project='{}'",
             day,
             client,
             project,
@@ -131,7 +132,7 @@ impl TimingsRecorder {
         let mut conn = self.pool.acquire().await?;
         let summaries = conn
             .get_timings_daily_summaries(
-                Utc,
+                Local,
                 day,
                 day,
                 Some(client.to_string()),
@@ -179,7 +180,7 @@ impl TimingsRecorder {
 
         let mut conn = self.pool.acquire().await?;
         conn.insert_timings_daily_summaries(
-            Utc,
+            Local,
             &[SummaryForDay {
                 day,
                 client: client.to_string(),

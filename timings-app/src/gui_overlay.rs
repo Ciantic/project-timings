@@ -448,12 +448,6 @@ impl GuiOverlay {
                             .await
                             .ok();
                         self.gui_summary = summary;
-                        log::trace!(
-                            "Updating summary cache for {} - {} 🥕 '{:?}'",
-                            client,
-                            project,
-                            self.gui_summary
-                        );
                     }
                     GuiOverlayEvent::UpdateSummary {
                         day,
