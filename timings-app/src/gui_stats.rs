@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::xdg::window::Window;
 use smithay_client_toolkit::shell::xdg::window::WindowDecorations;
@@ -33,7 +35,7 @@ impl GuiStats {
     }
 
     pub fn handle_events(&mut self, app: &mut Application, events: &[WaylandEvent]) {
-        self.surface_state.handle_events(app, events, &mut |ctx| {
+        self.surface_state.handle_events(app, events, &mut |_ctx| {
             // ctx.ui().label("GUI Stats Placeholder")
         });
     }

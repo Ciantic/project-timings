@@ -15,10 +15,7 @@ use smithay_client_toolkit::shell::wlr_layer::Anchor;
 use smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity;
 use smithay_client_toolkit::shell::wlr_layer::Layer;
 use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
-use sqlx::SqlitePool;
 use std::collections::HashMap;
-use timings::SummaryForDay;
-use timings::TimingsMutations;
 use timings::TimingsRecording;
 use tokio::sync::mpsc::UnboundedSender;
 use virtual_desktops::DesktopId;
@@ -47,7 +44,6 @@ pub enum GuiOverlayEvent {
 
 pub struct GuiOverlay {
     surface_state: Option<EguiSurfaceState<LayerSurface>>,
-    pool: SqlitePool,
 
     has_keyboard_focus: bool,
 
@@ -70,7 +66,6 @@ impl GuiOverlay {
         app: &Application,
         parent: &mut TimingsApp,
         app_message_sender: UnboundedSender<AppMessage>,
-        pool: SqlitePool,
         desktop_controller: KDEVirtualDesktopController,
     ) -> Self {
         let surface_state = {
@@ -115,7 +110,6 @@ impl GuiOverlay {
 
         Self {
             surface_state,
-            pool,
             has_keyboard_focus: false,
             gui_debug_mode: false,
             gui_fps: 0.0,
@@ -188,7 +182,7 @@ impl GuiOverlay {
             .unwrap_or_default();
     }
 
-    fn on_gui_summary_changed(&mut self, parent: &mut TimingsApp) {
+    fn on_gui_summary_changed(&mut self, _parent: &mut TimingsApp) {
         let day = Local::now().date_naive();
         let client = self.gui_client.trim().to_string();
         let project = self.gui_project.trim().to_string();
@@ -528,23 +522,6 @@ fn duration_to_hh_mm_ss(duration: &chrono::Duration) -> String {
 
 fn duration_to_hours(duration: &chrono::Duration) -> String {
     format!("{:.2}", duration.num_seconds() as f64 / 3600.0)
-}
-
-fn compare_client_and_project_names(
-    gui_client: &str,
-    gui_project: &str,
-    client: &Option<String>,
-    project: &Option<String>,
-) -> bool {
-    let client_match = match client {
-        Some(c) => gui_client.trim() == c.trim(),
-        None => gui_client.is_empty(),
-    };
-    let project_match = match project {
-        Some(p) => gui_project.trim() == p.trim(),
-        None => gui_project.is_empty(),
-    };
-    client_match && project_match
 }
 
 /// Spawns a thread that sends KeepAlive message every 30 seconds

@@ -107,8 +107,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let desktop_controller = KDEVirtualDesktopController::new().await?;
 
-    let tx = appmsg_sender.clone();
-
     // Stats GUI
     // Start the timings app
     let mut timings_app = TimingsApp::new(
@@ -358,7 +356,6 @@ impl TimingsApp {
                 app,
                 self,
                 self.sender.clone(),
-                self.pool.clone(),
                 self.desktop_controller.clone(),
             );
             self.gui_overlay = Some(overlay);

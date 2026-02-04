@@ -3,8 +3,6 @@ use chrono::DateTime;
 use chrono::NaiveDate;
 use chrono::TimeZone;
 use chrono::Utc;
-use sqlx::Sqlite;
-use sqlx::pool::PoolConnection;
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct Timing {
