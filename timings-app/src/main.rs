@@ -217,14 +217,6 @@ impl TimingsApp {
             desktop_controller: desktop_controller.clone(),
             current_desktop,
             gui_overlay: None,
-            // gui_debug_mode: false,
-            // gui_fps: 0.0,
-            // gui_totals: HashMap::new(),
-            // gui_client: String::new(),
-            // gui_project: String::new(),
-            // gui_summaries: HashMap::new(),
-            // has_keyboard_focus: false,
-            // egui_surface_state: None,
             tray_icon,
             green_icon,
             red_icon,
@@ -238,15 +230,6 @@ impl TimingsApp {
     fn start_timing_from_desktop_name(&mut self, desktop_name: &str) -> bool {
         let (client, project) = parse_desktop_name(desktop_name);
 
-        // if !compare_client_and_project_names(
-        //     &self.gui_client,
-        //     &self.gui_project,
-        //     &self.client,
-        //     &self.project,
-        // ) {
-        //     self.gui_client = self.client.clone().unwrap_or_default();
-        //     self.gui_project = self.project.clone().unwrap_or_default();
-        // }
         if self
             .gui_overlay
             .as_ref()
@@ -351,7 +334,7 @@ impl TimingsApp {
     // GUI methods
     pub fn show_gui(&mut self, app: &mut Application) {
         if self.gui_overlay.is_none() {
-            log::info!("Showing overlay GUI");
+            log::trace!("Showing overlay GUI");
             let overlay = GuiOverlay::new(
                 app,
                 self,
@@ -370,6 +353,7 @@ impl TimingsApp {
                 return;
             }
         }
+        log::trace!("Hiding overlay GUI");
 
         self.gui_overlay.take();
     }
@@ -401,7 +385,7 @@ impl TimingsApp {
             AppMessage::WaylandDispatch(token) => {
                 let events = app.dispatch_pending(*token);
                 if let Some(mut overlay) = self.gui_overlay.take() {
-                    overlay.handle_wayland_events(self, app, &events);
+                    overlay.handle_wayland_events(self, app, &events).await;
                     self.gui_overlay = Some(overlay);
                 }
             }

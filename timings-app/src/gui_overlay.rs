@@ -54,7 +54,7 @@ pub struct GuiOverlay {
     gui_fps: f32,
     gui_client: String,
     gui_project: String,
-    gui_summary: String,
+    gui_summary: Option<String>,
     gui_totals: HashMap<(String, String), timings::Totals>,
 
     app_message_sender: UnboundedSender<AppMessage>,
@@ -93,35 +93,32 @@ impl GuiOverlay {
             layer_surface.commit();
             Some(EguiSurfaceState::new(&app, layer_surface, 350, 200))
         };
-        let current_desktop =
-            futures::executor::block_on(desktop_controller.get_current_desktop()).unwrap();
+        let current_desktop = desktop_controller
+            .get_current_desktop_blocking()
+            .expect("Desktop get failed");
 
-        let current_desktop_name =
-            futures::executor::block_on(desktop_controller.get_desktop_name(&current_desktop))
-                .unwrap_or_default();
+        let current_desktop_name = desktop_controller
+            .get_desktop_name_blocking(&current_desktop)
+            .expect("Desktop name get failed");
 
         let (gui_client, gui_project) = parse_desktop_name(&current_desktop_name);
 
-        let gui_summary = parent.timings_recorder.get_summary_if_cached(
-            Local::now().date_naive(),
-            &gui_client.clone().unwrap_or_default(),
-            &gui_project.clone().unwrap_or_default(),
-        );
-
-        Self {
+        let mut result = Self {
             surface_state,
             has_keyboard_focus: false,
             gui_debug_mode: false,
             gui_fps: 0.0,
             gui_client: gui_client.unwrap_or_default(),
             gui_project: gui_project.unwrap_or_default(),
-            gui_summary: gui_summary.unwrap_or_default(),
+            gui_summary: None,
             gui_totals: HashMap::new(),
             current_desktop,
             desktop_controller,
             app_message_sender: app_message_sender.clone(),
             update_totals_thread: spawn_update_totals_thread(app_message_sender.clone()),
-        }
+        };
+        result.update_gui_summary_from_cache(parent);
+        result
     }
 
     pub fn has_keyboard_focus(&self) -> bool {
@@ -149,25 +146,15 @@ impl GuiOverlay {
         let project = self.gui_project.trim().to_string();
         let current_desktop = self.current_desktop.clone();
         let mut controller = self.desktop_controller.clone();
-        let app_message_sender = self.app_message_sender.clone();
-        let today = Local::now().date_naive();
         self.update_gui_summary_from_cache(parent);
 
         run_debounced_spawn(
-            "update_client_or_project",
+            "update_desktop",
             std::time::Duration::from_millis(300),
             async move {
                 let _ = controller
                     .update_desktop_name(current_desktop, &format!("{}: {}", client, project))
                     .await;
-
-                let _ = app_message_sender.send(AppMessage::GuiOverlayEvent(
-                    GuiOverlayEvent::UpdateSummaryCache {
-                        day: today,
-                        client,
-                        project,
-                    },
-                ));
             },
         );
     }
@@ -178,31 +165,47 @@ impl GuiOverlay {
         let project = self.gui_project.trim().to_string();
         self.gui_summary = parent
             .timings_recorder
-            .get_summary_if_cached(day, &client, &project)
-            .unwrap_or_default();
+            .get_summary_if_cached(day, &client, &project);
+
+        let app_message_sender = self.app_message_sender.clone();
+        run_debounced_spawn(
+            "update_summary_cache",
+            std::time::Duration::from_millis(300),
+            async move {
+                let _ = app_message_sender.send(AppMessage::GuiOverlayEvent(
+                    GuiOverlayEvent::UpdateSummaryCache {
+                        day,
+                        client,
+                        project,
+                    },
+                ));
+            },
+        );
     }
 
     fn on_gui_summary_changed(&mut self, _parent: &mut TimingsApp) {
         let day = Local::now().date_naive();
         let client = self.gui_client.trim().to_string();
         let project = self.gui_project.trim().to_string();
-        let summary = self.gui_summary.trim().to_string();
-        let tx = self.app_message_sender.clone();
-        run_debounced_spawn(
-            "update_summary_database",
-            std::time::Duration::from_millis(300),
-            async move {
-                tx.send(AppMessage::GuiOverlayEvent(
-                    GuiOverlayEvent::UpdateSummary {
-                        day,
-                        client,
-                        project,
-                        summary,
-                    },
-                ))
-                .ok();
-            },
-        );
+        if let Some(summary) = &self.gui_summary {
+            let summary = summary.trim().to_string();
+            let tx = self.app_message_sender.clone();
+            run_debounced_spawn(
+                "update_summary_database",
+                std::time::Duration::from_millis(300),
+                async move {
+                    tx.send(AppMessage::GuiOverlayEvent(
+                        GuiOverlayEvent::UpdateSummary {
+                            day,
+                            client,
+                            project,
+                            summary,
+                        },
+                    ))
+                    .ok();
+                },
+            );
+        }
     }
 
     fn overlay_ui(&mut self, ctx: &Context, parent: &mut TimingsApp) {
@@ -279,13 +282,17 @@ impl GuiOverlay {
                     ui.add_space(5.0);
 
                     // Summary text field
+                    let mut empty_string = "".to_string();
                     let summary_input = ui.add_enabled(
-                        true,
-                        egui::TextEdit::singleline(&mut self.gui_summary)
-                            .desired_width(f32::INFINITY)
-                            .horizontal_align(egui::Align::Center)
-                            .background_color(Color32::from_white_alpha(0))
-                            .font(egui::FontId::new(13.0, egui::FontFamily::Proportional)),
+                        self.gui_summary.is_some(),
+                        egui::TextEdit::singleline(match self.gui_summary.as_mut() {
+                            Some(v) => v,
+                            None => &mut empty_string,
+                        })
+                        .desired_width(f32::INFINITY)
+                        .horizontal_align(egui::Align::Center)
+                        .background_color(Color32::from_white_alpha(0))
+                        .font(egui::FontId::new(13.0, egui::FontFamily::Proportional)),
                     );
 
                     // When client or project changes, call on_gui_client_or_project_changed
@@ -374,7 +381,7 @@ impl GuiOverlay {
         }
     }
 
-    pub fn handle_wayland_events(
+    pub async fn handle_wayland_events(
         &mut self,
         parent: &mut TimingsApp,
         app: &mut Application,
@@ -398,7 +405,7 @@ impl GuiOverlay {
                     }
                     WaylandEvent::KeyboardLeave(_) => {
                         self.has_keyboard_focus = false;
-                        futures::executor::block_on(parent.start_timing()).unwrap();
+                        parent.start_timing().await.unwrap();
                         surface_state.set_keyboard_interactivity(KeyboardInteractivity::None);
                         self.request_frame();
                         parent.hide_gui_after_delay();
@@ -423,14 +430,14 @@ impl GuiOverlay {
             AppMessage::GuiOverlayEvent(gui_event) => {
                 match gui_event {
                     GuiOverlayEvent::UpdateTotalsTimer => {
-                        futures::executor::block_on(self.update_totals(parent));
+                        self.update_totals(parent).await;
                     }
                     GuiOverlayEvent::UpdateSummaryCache {
                         day,
                         client,
                         project,
                     } => {
-                        parent
+                        let summary = parent
                             .timings_recorder
                             .update_summary_cache(
                                 day.clone(),
@@ -440,6 +447,13 @@ impl GuiOverlay {
                             )
                             .await
                             .ok();
+                        self.gui_summary = summary;
+                        log::trace!(
+                            "Updating summary cache for {} - {} 🥕 '{:?}'",
+                            client,
+                            project,
+                            self.gui_summary
+                        );
                     }
                     GuiOverlayEvent::UpdateSummary {
                         day,
@@ -474,7 +488,7 @@ impl GuiOverlay {
                             Utc::now(),
                         )
                         .await
-                        .unwrap_or_default();
+                        .ok();
                     self.gui_client = gui_client.unwrap_or_default();
                     self.gui_project = gui_project.unwrap_or_default();
                     self.request_frame();
@@ -491,7 +505,7 @@ impl GuiOverlay {
                                 Utc::now(),
                             )
                             .await
-                            .unwrap_or_default();
+                            .ok();
                         self.gui_client = gui_client.unwrap_or_default();
                         self.gui_project = gui_project.unwrap_or_default();
                         self.request_frame();

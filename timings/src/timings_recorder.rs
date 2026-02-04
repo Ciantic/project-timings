@@ -146,6 +146,10 @@ impl TimingsRecorder {
             );
             Ok(summary.summary)
         } else {
+            self.summary_cache.insert(
+                (day, client.to_string(), project.to_string()),
+                String::new(),
+            );
             Ok(String::new())
         }
     }

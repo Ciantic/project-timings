@@ -58,4 +58,14 @@ pub trait VirtualDesktopController {
 
     /// Get list of all virtual desktop IDs.
     async fn get_desktops(&self) -> Result<Vec<(DesktopId, String)>, Error>;
+
+    fn get_desktop_name_blocking(&self, desktop_id: &DesktopId) -> Result<String, Error> {
+        futures::executor::block_on(self.get_desktop_name(desktop_id))
+    }
+    fn get_current_desktop_blocking(&self) -> Result<DesktopId, Error> {
+        futures::executor::block_on(self.get_current_desktop())
+    }
+    fn get_desktops_blocking(&self) -> Result<Vec<(DesktopId, String)>, Error> {
+        futures::executor::block_on(self.get_desktops())
+    }
 }
