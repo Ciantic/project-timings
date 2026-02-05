@@ -67,6 +67,7 @@ enum AppMessage {
     Exit,
     WriteTimings,
     KeepAlive,
+    ShowStats,
     ShowDailyTotals,
     ShowDailySummaries,
     TrayIconClicked,
@@ -207,7 +208,7 @@ impl TimingsApp {
             .tooltip(format!("Timings").as_str())
             .menu(
                 MenuBuilder::new()
-                    .item("Show daily totals", AppMessage::ShowDailyTotals)
+                    .item("Show stats", AppMessage::ShowStats)
                     .item("Exit", AppMessage::Exit),
             )
             .build()?;
@@ -438,6 +439,17 @@ impl TimingsApp {
             AppMessage::KeepAlive => {
                 log::trace!("Keep alive timing");
                 self.keep_alive();
+            }
+            AppMessage::ShowStats => {
+                // Execute bash script to show stats
+                // /home/jarppa/projects/javascript/timings-stats/start.sh
+                if let Err(e) = std::process::Command::new(
+                    "/home/jarppa/projects/javascript/timings-stats/start.sh",
+                )
+                .spawn()
+                {
+                    log::error!("Failed to start stats script: {}", e);
+                }
             }
             AppMessage::ShowDailyTotals => {
                 if let Err(e) = self.show_daily_totals().await {
