@@ -441,15 +441,24 @@ impl TimingsApp {
                 self.keep_alive();
             }
             AppMessage::ShowStats => {
-                // Execute bash script to show stats
+                // Execute bash script to show stats in a separate thread
                 // /home/jarppa/projects/javascript/timings-stats/start.sh
-                if let Err(e) = std::process::Command::new(
-                    "/home/jarppa/projects/javascript/timings-stats/start.sh",
-                )
-                .spawn()
-                {
-                    log::error!("Failed to start stats script: {}", e);
-                }
+                thread::spawn(|| {
+                    match std::process::Command::new(
+                        "/home/jarppa/projects/javascript/timings-stats/start.sh",
+                    )
+                    .spawn()
+                    {
+                        Ok(mut child) => {
+                            if let Err(e) = child.wait() {
+                                log::error!("Failed to wait for stats script: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed to start stats script: {}", e);
+                        }
+                    }
+                });
             }
             AppMessage::ShowDailyTotals => {
                 if let Err(e) = self.show_daily_totals().await {
