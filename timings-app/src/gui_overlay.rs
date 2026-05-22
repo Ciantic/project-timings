@@ -7,7 +7,6 @@ use chrono::NaiveDate;
 use chrono::Utc;
 use egui::CentralPanel;
 use egui::Color32;
-use egui::Context;
 use egui::Pos2;
 use smithay_client_toolkit::seat::pointer::PointerEventKind;
 use smithay_client_toolkit::shell::WaylandSurface;
@@ -208,9 +207,9 @@ impl GuiOverlay {
         }
     }
 
-    fn overlay_ui(&mut self, ctx: &Context, parent: &mut TimingsApp) {
-        ctx.set_visuals(egui::Visuals::light());
-        let bg_color = ctx.style().visuals.panel_fill;
+    fn overlay_ui(&mut self, ui: &mut egui::Ui, parent: &mut TimingsApp) {
+        ui.set_visuals(egui::Visuals::light());
+        let bg_color = ui.style().visuals.panel_fill;
         let is_running = parent.timings_recorder.is_running();
         let totals = self
             .gui_totals
@@ -220,10 +219,10 @@ impl GuiOverlay {
             ))
             .cloned();
         // User is holding alt key:
-        let debug_mode = self.gui_debug_mode || ctx.input(|i| i.modifiers.alt);
+        let debug_mode = self.gui_debug_mode || ui.input(|i| i.modifiers.alt);
 
         // Toggle debug mode with ALT+D
-        if ctx.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::D)) {
+        if ui.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::D)) {
             self.gui_debug_mode = !self.gui_debug_mode;
         }
 
@@ -241,10 +240,10 @@ impl GuiOverlay {
                     ))
                     .inner_margin(10.0),
             )
-            .show(ctx, |ui| {
+            .show_inside(ui, |ui| {
                 if debug_mode {
                     let painter = ui.painter();
-                    let screen_rect = ctx.content_rect();
+                    let screen_rect = ui.content_rect();
 
                     painter.text(
                         Pos2::new(screen_rect.right() - 5.0, screen_rect.top() + 5.0),
@@ -252,7 +251,7 @@ impl GuiOverlay {
                         format!(
                             "ALT+D {:7.2} / {:>4}",
                             self.gui_fps,
-                            ctx.cumulative_pass_nr()
+                            ui.cumulative_pass_nr()
                         ),
                         egui::FontId::new(10.0, egui::FontFamily::Monospace),
                         egui::Color32::GRAY,
@@ -389,7 +388,7 @@ impl GuiOverlay {
     ) {
         if let Some(mut surface_state) = self.surface_state.take() {
             self.gui_fps = surface_state.get_fps();
-            surface_state.handle_events(app, events, &mut |ctx| self.overlay_ui(ctx, parent));
+            surface_state.handle_events(app, events, &mut |ui| self.overlay_ui(ui, parent));
             for event in events {
                 if let Some(wl_surface) = event.get_wl_surface() {
                     if surface_state.get_content().wl_surface() != wl_surface {

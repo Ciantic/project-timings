@@ -1,3 +1,4 @@
+#![allow(unused)]
 use crate::AppMessage;
 use crate::TimingsApp;
 use smithay_client_toolkit::shell::WaylandSurface;
@@ -36,7 +37,7 @@ impl GuiStats {
 
     pub async fn handle_app_events(
         &mut self,
-        parent: &mut TimingsApp,
+        _parent: &mut TimingsApp,
         _app: &mut Application,
         event: &AppMessage,
     ) -> () {
@@ -48,9 +49,10 @@ impl GuiStats {
         }
     }
 
+    #[allow(unused)]
     pub async fn handle_wayland_events(
         &mut self,
-        parent: &mut TimingsApp,
+        _parent: &mut TimingsApp,
         app: &mut Application,
         events: &[WaylandEvent],
     ) -> () {

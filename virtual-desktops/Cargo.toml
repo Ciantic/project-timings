@@ -8,8 +8,8 @@ name = "virtual_desktops"
 path = "src/lib.rs"
 
 [dependencies]
-futures = "0.3.31"
+futures = "0.3.32"
 serde = "1.0.228"
-tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
-zbus = "5.13"
-zbus_macros = "5.13"
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
+zbus = "5.15"
+zbus_macros = "5.15"
