@@ -257,10 +257,10 @@ impl TimingsApp {
 
             true
         } else {
-            log::warn!(
-                "Stopping timing: desktop name '{}' has no valid project",
-                desktop_name
-            );
+            // log::warn!(
+            //     "Stopping timing: desktop name '{}' has no valid project",
+            //     desktop_name
+            // );
             self.stop_timing();
             false
         }
