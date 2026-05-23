@@ -253,11 +253,11 @@ impl TimingsRecording for TimingsRecorder {
 
         self.keep_alive_timing(now);
         if (client == "") || (project == "") {
-            log::warn!(
-                "Client or Project is empty (client='{}', project='{}'), not starting timing",
-                client,
-                project
-            );
+            // log::warn!(
+            //     "Client or Project is empty (client='{}', project='{}'), not starting
+            // timing",     client,
+            //     project
+            // );
             // Stop current timing
             self.stop_timing(now);
             return false;
