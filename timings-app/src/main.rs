@@ -7,6 +7,7 @@ use log::trace;
 use single_instance::only_single_instance;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::thread;
@@ -108,6 +109,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = sender_for_single_instance.send(AppMessage::AnotherInstanceTriedToStart);
     })?;
 
+    println!("Starting timings app with database: {}", database_path);
+
     let desktop_controller = KDEVirtualDesktopController::new().await?;
 
     // Stats GUI
@@ -132,6 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_write_timings_thread(appmsg_sender.clone());
     spawn_keepalive_thread(appmsg_sender.clone());
     spawn_virtual_desktop_listener(desktop_controller.clone(), appmsg_sender.clone());
+    spawn_signal_handler(appmsg_sender.clone());
     app.run_dispatcher();
     loop {
         if let Some(event) = appmsgs.recv().await {
@@ -590,7 +594,7 @@ fn spawn_virtual_desktop_listener(
     });
 }
 
-/// Spawns a thread to read lines from stdin
+/// Spawns a thread to read lines from stdin (only if interactive)
 fn spawn_stdin_reader(app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>) {
     fn print_info() {
         println!("Commands:");
@@ -600,7 +604,12 @@ fn spawn_stdin_reader(app_message_sender: tokio::sync::mpsc::UnboundedSender<App
         println!("3: Show daily summaries from past 4 weeks");
         println!("Type command and press Enter: ");
     }
-    // let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+    if !std::io::stdin().is_terminal() {
+        log::info!("stdin is not a terminal, skipping interactive command reader");
+        return;
+    }
+
     thread::spawn(move || {
         print_info();
         for line in std::io::stdin().lines() {
@@ -686,6 +695,37 @@ fn spawn_idle_monitor_thread(
                 log::error!("Idle monitor thread panic");
             }
         }
+    });
+}
+
+/// Spawns a signal handler that listens for SIGTERM and SIGINT and sends Exit
+fn spawn_signal_handler(app_message_sender: tokio::sync::mpsc::UnboundedSender<AppMessage>) {
+    tokio::spawn(async move {
+        let sigterm = async {
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to register SIGTERM handler")
+                .recv()
+                .await;
+        };
+        let sigint = async {
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                .expect("failed to register SIGINT handler")
+                .recv()
+                .await;
+        };
+
+        tokio::select! {
+            _ = sigterm => {
+                log::warn!("Received SIGTERM, shutting down");
+            }
+            _ = sigint => {
+                log::warn!("Received SIGINT, shutting down");
+            }
+        }
+
+        // Write timings before exiting
+        let _ = app_message_sender.send(AppMessage::WriteTimings);
+        let _ = app_message_sender.send(AppMessage::Exit);
     });
 }
 

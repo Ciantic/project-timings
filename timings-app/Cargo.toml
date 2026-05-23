@@ -10,7 +10,11 @@ trayicon = { git = "https://github.com/Ciantic/trayicon-rs", branch = "master" }
 smithay-client-toolkit = "0.20.0"
 egui = "0.34.2"
 wayapp = { git = "https://github.com/Ciantic/wayapp", branch = "suspend_optimization" }
-tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.52.3", features = [
+    "macros",
+    "rt-multi-thread",
+    "signal",
+] }
 clap = { version = "4.6", features = ["derive"] }
 
 single-instance = { path = "../single-instance" }
