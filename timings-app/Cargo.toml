@@ -8,8 +8,8 @@ version = "0.0.1"
 [dependencies]
 trayicon = { git = "https://github.com/Ciantic/trayicon-rs", branch = "master" }
 smithay-client-toolkit = "0.20.0"
-egui = "0.34.2"
-wayapp = { git = "https://github.com/Ciantic/wayapp", branch = "suspend_optimization" }
+egui = "0.35.0"
+wayapp = { git = "https://github.com/Ciantic/wayapp", branch = "main" }
 tokio = { version = "1.52.3", features = [
     "macros",
     "rt-multi-thread",
@@ -25,7 +25,7 @@ timings = { path = "../timings" }
 sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite"] }
 futures = "0.3.32"
 chrono = { version = "0.4", features = ["serde"] }
-log = "0.4.29"
+log = "0.4.33"
 env_logger = "0.11"
 
 # Debugging and profiling

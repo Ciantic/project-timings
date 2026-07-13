@@ -11,5 +11,5 @@ path = "src/lib.rs"
 futures = "0.3.32"
 serde = "1.0.228"
 tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
-zbus = "5.15"
-zbus_macros = "5.15"
+zbus = "5.17"
+zbus_macros = "5.17"

@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-zbus = "5.15"
+zbus = "5.17"
 futures = "0.3"

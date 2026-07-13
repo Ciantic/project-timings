@@ -240,7 +240,7 @@ impl GuiOverlay {
                     ))
                     .inner_margin(10.0),
             )
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 if debug_mode {
                     let painter = ui.painter();
                     let screen_rect = ui.content_rect();
